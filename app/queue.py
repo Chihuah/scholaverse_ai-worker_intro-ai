@@ -15,6 +15,8 @@ class GenerationJob:
     style_hint: str
     callback_url: str
     student_nickname: str = "Student"
+    requested_seed: int | None = None
+    ollama_model_override: str | None = None
     status: str = "queued"
     prompt: str | None = None
     final_prompt: str | None = None

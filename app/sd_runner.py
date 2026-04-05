@@ -1,4 +1,6 @@
-"""sd-cli subprocess 封裝 — 自動加入 LoRA 觸發詞 / 風格前綴（seed 使用 -1 隨機）"""
+from __future__ import annotations
+
+"""sd-cli subprocess wrapper with LoRA, style, readability, and cleanup blocks."""
 
 import asyncio
 import logging
@@ -11,55 +13,62 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 可用的 LoRA 風格選項（None 代表不使用 LoRA）
-# 每次生成隨機挑選一種，讓不同學生的卡牌有視覺多樣性
 LORA_OPTIONS = [
     "<lora:moode_fantasy_Impressions:0.5>",
     "<lora:Z-Art-3:0.5>",
     "<lora:Desimulate:0.5>",
-    None,  # 不使用 LoRA
+    None,
 ]
 
-
-def _pick_random_lora_prefix(style_prefix: str) -> str:
-    """隨機挑選一個 LoRA 風格，組裝並回傳 prompt 前綴。
-
-    style_prefix 由 prompt_builder.build_style_prefix() 動態生成，
-    依 LV 和稀有度調整氛圍與視覺品質。
-    """
-    lora = random.choice(LORA_OPTIONS)
-    if lora:
-        return f"{lora} {style_prefix}"
-    return style_prefix
+READABILITY_BLOCK = "face readable, pose readable, text readable"
+CLEANUP_BLOCK = (
+    "no extra characters, no extra weapons, no cluttered props, no obscured face, "
+    "no unreadable text, no oversized weapon dominating the frame, no ambiguous pose, no silhouette, no backlit silhouette, no face in deep shadow"
+)
 
 
-async def run_sd_cli(prompt: str, job_id: str, student_id: str,
-                     style_prefix: str) -> tuple[str, str, int, str]:
-    """呼叫 sd-cli 生成圖片，回傳 (輸出檔案路徑, lora_tag, seed, final_prompt)。
+def _pick_random_lora() -> str | None:
+    return random.choice(LORA_OPTIONS)
 
-    Args:
-        prompt: Ollama 產出的純角色描述（不含 LoRA / 前綴）。
-        job_id: 任務 UUID，用於命名輸出檔案。
-        student_id: 學號（目前未使用，保留供未來擴充）。
-        style_prefix: 由 build_style_prefix(level, rarity) 動態生成的風格前綴。
 
-    Returns:
-        (output_path, lora_tag) — lora_tag 為 "none" 代表未使用 LoRA。
+def _compose_final_prompt(
+    llm_prompt: str,
+    style_block: str,
+    lora_block: str | None,
+) -> str:
+    parts = []
+    if lora_block:
+        parts.append(lora_block)
+    if style_block:
+        parts.append(style_block)
+    parts.append(llm_prompt)
+    parts.append(READABILITY_BLOCK)
+    parts.append(CLEANUP_BLOCK)
+    return ", ".join(part.strip().rstrip(",") for part in parts if part and part.strip())
 
-    Raises:
-        Exception: sd-cli 執行失敗或超時。
-    """
-    # 隨機挑選 LoRA 風格並組裝最終 prompt
-    prompt_prefix = _pick_random_lora_prefix(style_prefix)
-    final_prompt = f"{prompt_prefix} {prompt}"
-    seed = -1  # 使用隨機 seed，每次生成結果不同，確保重新生成有意義
 
-    # 輸出路徑
+async def run_sd_cli(
+    prompt: str,
+    job_id: str,
+    student_id: str,
+    style_prefix: str,
+    seed_override: int | None = None,
+) -> tuple[str, str, int, str]:
+    """Run sd-cli and return (output_path, lora_tag, seed, final_prompt)."""
+    del student_id  # reserved for future deterministic seed strategies
+
+    lora_block = _pick_random_lora()
+    final_prompt = _compose_final_prompt(
+        llm_prompt=prompt,
+        style_block=style_prefix,
+        lora_block=lora_block,
+    )
+    seed = seed_override if seed_override is not None else random.randint(0, 2_147_483_647)
+
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{job_id}.png"
 
-    # 組裝 sd-cli 指令
     cmd = [
         settings.sd_cli_path,
         "--diffusion-model", settings.model_path,
@@ -76,14 +85,13 @@ async def run_sd_cli(prompt: str, job_id: str, student_id: str,
         "-p", final_prompt,
     ]
 
-    lora_tag = prompt_prefix.split(" ")[0] if prompt_prefix.startswith("<lora:") else "none"
+    lora_tag = lora_block or "none"
     logger.info(
-        "Starting sd-cli: job_id=%s, seed=%s (random), lora=%s, output=%s",
+        "Starting sd-cli: job_id=%s, seed=%s, lora=%s, output=%s",
         job_id, seed, lora_tag, output_path,
     )
     logger.debug("sd-cli command: %s", cmd)
 
-    # 執行 subprocess
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -99,41 +107,26 @@ async def run_sd_cli(prompt: str, job_id: str, student_id: str,
         logger.error("sd-cli timed out after %ds, killing process: job_id=%s", settings.job_timeout, job_id)
         process.kill()
         await process.wait()
-        raise Exception(
-            f"sd-cli timed out after {settings.job_timeout} seconds"
-        )
+        raise Exception(f"sd-cli timed out after {settings.job_timeout} seconds")
 
-    # 檢查 returncode
     if process.returncode != 0:
         stderr_text = stderr.decode(errors="replace").strip()
         logger.error(
             "sd-cli failed (rc=%d): job_id=%s, stderr=%s",
             process.returncode, job_id, stderr_text,
         )
-        raise Exception(
-            f"sd-cli exited with code {process.returncode}: {stderr_text}"
-        )
+        raise Exception(f"sd-cli exited with code {process.returncode}: {stderr_text}")
 
-    # 檢查輸出檔案是否存在
     if not output_path.exists():
         logger.error("sd-cli finished but output file missing: %s", output_path)
-        raise Exception(
-            f"sd-cli completed but output file not found: {output_path}"
-        )
+        raise Exception(f"sd-cli completed but output file not found: {output_path}")
 
     logger.info("sd-cli completed: job_id=%s, output=%s", job_id, output_path)
     return str(output_path), lora_tag, seed, final_prompt
 
 
 async def create_thumbnail(image_path: str) -> str:
-    """產生縮圖 (220x320)。
-
-    Args:
-        image_path: 原始圖片路徑。
-
-    Returns:
-        縮圖檔案路徑字串。
-    """
+    """Create thumbnail (220x320)."""
     src = Path(image_path)
     thumbnail_path = src.with_name(f"{src.stem}_thumb{src.suffix}")
 

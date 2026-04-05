@@ -41,6 +41,8 @@ class GenerateRequest(BaseModel):
     card_config: CardConfig
     learning_data: LearningData
     style_hint: str = "16-bit pixel art, fantasy RPG character card"
+    seed: int | None = None
+    ollama_model_override: str | None = None
     callback_url: str
 
 

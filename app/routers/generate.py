@@ -33,6 +33,8 @@ async def create_generation_job(body: GenerateRequest, request: Request):
         card_id=body.card_id,
         student_id=body.student_id,
         student_nickname=body.student_nickname,
+        requested_seed=body.seed,
+        ollama_model_override=body.ollama_model_override,
         card_config=body.card_config.model_dump(by_alias=True),
         learning_data=body.learning_data.model_dump(),
         style_hint=body.style_hint,

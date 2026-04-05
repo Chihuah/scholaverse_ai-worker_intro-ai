@@ -1,4 +1,4 @@
-"""Worker Loop — 持續從佇列取出任務並處理，一次一張圖。"""
+"""Worker Loop ? ???????????????????"""
 
 import asyncio
 import logging
@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from app.callback import send_callback
 from app.config import settings
 from app.llm_service import generate_prompt, unload_model
-from app.prompt_builder import build_structured_description, build_style_prefix
+from app.prompt_builder import (
+    build_prompt_spec,
+    build_style_prefix,
+    render_prompt_spec_for_llm,
+)
 from app.queue import JobQueue
 from app.sd_runner import create_thumbnail, run_sd_cli
 from app.storage_uploader import upload_images
@@ -16,30 +20,37 @@ logger = logging.getLogger(__name__)
 
 
 async def _process_job(job) -> None:
-    """執行單一任務的完整五步驟流程（含整體 timeout 保護）。"""
+    """?????????????????? timeout ????"""
     job.status = "processing"
 
     # Step 1: LLM prompt generation
     logger.info("[Step 1] Generating prompt via Ollama...")
-    structured_desc = build_structured_description(
-        job.card_config, job.learning_data, job.student_nickname
+    prompt_spec = build_prompt_spec(
+        job.card_config,
+        job.learning_data,
+        job.student_nickname,
     )
-    prompt = await generate_prompt(structured_desc)
+    structured_desc = render_prompt_spec_for_llm(prompt_spec)
+    active_ollama_model = job.ollama_model_override or settings.ollama_model
+    prompt = await generate_prompt(structured_desc, model_name=active_ollama_model)
     job.prompt = prompt
-    job.llm_model = settings.ollama_model
+    job.llm_model = active_ollama_model
     logger.info("[Step 1] Prompt generated: %s", prompt[:100] + "..." if len(prompt) > 100 else prompt)
 
     # Step 1.5: Unload Ollama model to free GPU VRAM
     logger.info("[Step 1.5] Unloading Ollama model to free GPU VRAM...")
-    await unload_model()
+    await unload_model(model_name=active_ollama_model)
 
     # Step 2: sd-cli image generation
     logger.info("[Step 2] Running sd-cli image generation...")
-    level = int(job.card_config.get("level", 1))
-    rarity = job.card_config.get("rarity", "N")
-    style_prefix = build_style_prefix(level, rarity)
+    character_facts = prompt_spec["character_facts"]
+    direction_spec = prompt_spec["direction_spec"]
+    level = int(character_facts.get("level", 1))
+    rarity = character_facts.get("rarity", "N")
+    style_profile = direction_spec.get("style_profile")
+    style_block = build_style_prefix(level, rarity, style_profile=style_profile)
     output_path, lora_tag, seed, final_prompt = await run_sd_cli(
-        prompt, job.job_id, job.student_id, style_prefix
+        prompt, job.job_id, job.student_id, style_block, seed_override=job.requested_seed
     )
     job.lora_used = lora_tag
     job.seed = seed
@@ -84,23 +95,23 @@ async def _process_job(job) -> None:
 
 
 async def worker_loop(queue: JobQueue) -> None:
-    """持續從佇列取出任務並依序處理。
+    """???????????????
 
-    流程：
-      Step 1:   LLM prompt 生成 (Ollama)
-      Step 1.5: 卸載 Ollama 模型 (keep_alive=0，釋放 VRAM)
-      Step 2:   sd-cli 文生圖
-      Step 3:   產生縮圖 (Pillow)
-      Step 4:   上傳至 vm-db-storage（或 mock）
-      Step 5:   回調 vm-web-server
+    ???
+      Step 1:   LLM prompt ?? (Ollama)
+      Step 1.5: ?? Ollama ?? (keep_alive=0??? VRAM)
+      Step 2:   sd-cli ???
+      Step 3:   ???? (Pillow)
+      Step 4:   ??? vm-db-storage?? mock?
+      Step 5:   ?? vm-web-server
 
-    整體 timeout: settings.overall_job_timeout（預設 600s），
-    防止任何單步驟掛起時整個 worker 被永久卡住。
+    ?? timeout: settings.overall_job_timeout??? 600s??
+    ???????????? worker ??????
     """
     logger.info("Worker loop started, waiting for jobs...")
 
     while True:
-        # 從 queue 取出 job_id
+        # ? queue ?? job_id
         job_id = await queue._queue.get()
         job = queue.get_job(job_id)
 
@@ -137,7 +148,6 @@ async def worker_loop(queue: JobQueue) -> None:
             job.error = str(e)
             logger.error("Job %s failed: %s", job.job_id, e, exc_info=True)
 
-            # 失敗也要送 callback
             await send_callback(job.callback_url, {
                 "job_id": job.job_id,
                 "card_id": job.card_id,

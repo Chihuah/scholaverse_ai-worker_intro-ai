@@ -1,4 +1,6 @@
-"""Ollama API 封裝 — LLM prompt 生成與模型卸載"""
+from __future__ import annotations
+
+"""Ollama API wrapper for constrained prompt generation and model unload."""
 
 import logging
 
@@ -8,41 +10,81 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
-You are a professional text-to-image prompt engineer for fantasy RPG character card art.
-Given a structured character description, write a vivid English image generation prompt.
+SYSTEM_PROMPT = """You are a prompt writer for a fantasy RPG character card image model.
 
-Output ONLY the prompt text - no explanations, no line breaks.
+Your task is to convert structured character facts and visual direction into one coherent English image prompt.
 
 Rules:
-- The character is the central subject, shown from waist up or full body, in a vertical portrait card format
-- For CONFIRMED ATTRIBUTES: describe them faithfully and in detail (race features, class appearance, clothing, weapon, pose, expression, background scene)
-- For CREATIVE GUIDANCE sections: invent unique, vivid details that fit the hint. Make each generation feel different - vary the specific scene, items, pose, and expression every time, even if the input is identical
-- The Card Display instructions (LV number, rarity label, nickname scroll) MUST appear verbatim in your output - copy them exactly as given, do not paraphrase
-- Do NOT include LoRA triggers, style prefixes, or technical SD tags
-- Output a single flowing paragraph"""
+- Do not change confirmed character facts.
+- Do not change the object rule.
+- Do not add extra characters, creatures, companions, mounts, props, weapons, or tools unless explicitly allowed.
+- Do not show any visible blade, hilt, dagger, staff, or combat item when the object rule says the character is unarmed.
+- Respect the visual direction exactly.
+- Keep the image focused on one character only.
+- Keep the face fully lit with clearly visible facial features.
+- Keep a clear character outline with visible clothing details.
+- Do not render the character as a silhouette or heavy backlit shadow.
+- Keep the background secondary to the character.
+- Preserve readable English card text as part of the image composition.
+- Treat all three card text areas as required and important.
+- The student nickname must appear in a compact parchment scroll nameplate at the bottom center.
+- The level must appear as digits only inside a round badge at the top left.
+- The rarity must appear as letters only at the top right.
+- Do not add extra words such as "rarity" to the rarity mark.
+- Keep the bottom nameplate compact and limited to a small lower band of the card.
+- The bottom nameplate must contain only the nickname in one single line.
+- Do not duplicate the nickname elsewhere or add extra large title text above the nameplate.
+- Do not repeat the level number inside the bottom nameplate.
+- If the unlock stage is no_class, do not describe the character as any class, profession, or combat role.
+- If the character is empty-handed, explicitly describe the character as unarmed with both hands empty.
+- If the character uses a starter object, keep it simple, basic, and low-tier.
+- If pose or expression is explicitly provided, do not override it.
+- Output one single coherent English image prompt only.
+- Do not output explanations, lists, JSON, markdown, or quotation marks around the result.
+
+Write the prompt in this order:
+1. character identity
+2. framing and camera
+3. pose and expression
+4. held object or unarmed state
+5. clothing and appearance
+6. background
+7. card text placement and readability
+8. mood and finish
+"""
 
 
-async def generate_prompt(structured_description: str) -> str:
-    """呼叫 Ollama API 將結構化描述轉為英文文生圖 prompt。
+def build_ollama_prompt(structured_description: str) -> str:
+    """Assemble the final prompt sent to Ollama.
+
+    The worker still passes a rendered structured description string from
+    prompt_builder. We keep that interface stable and only tighten the system
+    instruction here.
+    """
+    return f"{SYSTEM_PROMPT}\n\n{structured_description}".strip()
+
+
+async def generate_prompt(structured_description: str, model_name: str | None = None) -> str:
+    """Call Ollama and convert structured direction into one English image prompt.
 
     Args:
-        structured_description: prompt_builder 產出的結構化角色描述。
+        structured_description: Structured direction text rendered by prompt_builder.
 
     Returns:
-        Ollama 產生的英文 prompt（已去除前後空白）。
+        A single English image prompt string.
 
     Raises:
-        Exception: Ollama API 呼叫失敗時。
+        Exception: If the Ollama request fails or returns empty output.
     """
     url = f"{settings.ollama_base_url}/api/generate"
+    active_model = model_name or settings.ollama_model
     payload = {
-        "model": settings.ollama_model,
-        "prompt": f"{SYSTEM_PROMPT}\n\n{structured_description}",
+        "model": active_model,
+        "prompt": build_ollama_prompt(structured_description),
         "stream": False,
     }
 
-    logger.info("Calling Ollama API for prompt generation (model=%s)", settings.ollama_model)
+    logger.info("Calling Ollama API for prompt generation (model=%s)", active_model)
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -69,18 +111,16 @@ async def generate_prompt(structured_description: str) -> str:
     return prompt
 
 
-async def unload_model() -> None:
-    """卸載 Ollama 模型以釋放 GPU VRAM，確保 sd-cli 可獨佔 GPU。
-
-    失敗時僅記錄 warning，不影響主流程。
-    """
+async def unload_model(model_name: str | None = None) -> None:
+    """Unload the Ollama model so sd-cli can reclaim GPU VRAM."""
     url = f"{settings.ollama_base_url}/api/generate"
+    active_model = model_name or settings.ollama_model
     payload = {
-        "model": settings.ollama_model,
+        "model": active_model,
         "keep_alive": 0,
     }
 
-    logger.info("Unloading Ollama model '%s' to free GPU VRAM", settings.ollama_model)
+    logger.info("Unloading Ollama model '%s' to free GPU VRAM", active_model)
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
