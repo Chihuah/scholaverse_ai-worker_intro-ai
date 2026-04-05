@@ -1,0 +1,24 @@
+# 敏感設定
+.env
+
+# 排除目錄
+docs/
+tests/
+
+# 生成圖片暫存
+outputs/
+
+# 備份檔
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# 環境
+.venv/
+*.egg-info/
+dist/
+build/
