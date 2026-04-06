@@ -49,8 +49,9 @@ async def _process_job(job) -> None:
     direction_spec = prompt_spec["direction_spec"]
     level = int(character_facts.get("level", 1))
     rarity = character_facts.get("rarity", "N")
+    border = character_facts.get("border", "bronze")
     style_profile = direction_spec.get("style_profile")
-    style_block = build_style_prefix(level, rarity, style_profile=style_profile)
+    style_block = build_style_prefix(level, rarity, border=border, style_profile=style_profile)
     output_path, lora_tag, seed, final_prompt = await run_sd_cli(
         prompt, job.job_id, job.student_id, style_block, seed_override=job.requested_seed
     )

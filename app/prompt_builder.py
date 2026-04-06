@@ -291,6 +291,40 @@ RARITY_VISUAL: dict[str, str] = {
     "UR": "ultra detailed, divine glow, ethereal particle effects, ornate legendary decorations",
 }
 
+BORDER_STYLE_RULES: dict[str, dict[str, str]] = {
+    "bronze": {
+        "material_name": "weathered bronze frame",
+        "prompt": "weathered bronze card border, aged bronze metal, subtle wear, humble fantasy craftsmanship",
+        "accent": "muted bronze highlights with restrained ornament",
+    },
+    "steel": {
+        "material_name": "tempered steel frame",
+        "prompt": "polished tempered steel card border, cool reflective metal, crisp edges, disciplined forged craftsmanship",
+        "accent": "clean steel highlights with restrained engraved lines",
+    },
+    "silver": {
+        "material_name": "engraved silver frame",
+        "prompt": "engraved silver card border, elegant silver filigree, refined magical ornament, bright silver sheen",
+        "accent": "ornate silver filigree with refined fantasy engraving",
+    },
+    "gold": {
+        "material_name": "royal gold frame",
+        "prompt": "ornate royal gold card border, luminous gold metal, intricate regal engravings, prestigious high-fantasy craftsmanship",
+        "accent": "radiant gold highlights with rich decorative detailing",
+    },
+    "prismatic": {
+        "material_name": "prismatic aether frame",
+        "prompt": "prismatic mythic card border, crystal-gold alloy, iridescent rainbow sheen, celestial energy, legendary ultimate rarity frame",
+        "accent": "prismatic light refractions with mythic crystal ornament",
+    },
+    # Legacy aliases for older cards already saved in storage.
+    "copper": {
+        "material_name": "weathered bronze frame",
+        "prompt": "weathered bronze card border, aged bronze metal, subtle wear, humble fantasy craftsmanship",
+        "accent": "muted bronze highlights with restrained ornament",
+    },
+}
+
 DEFAULT_STYLE_PROFILES: list[dict[str, Any]] = [
     {"name": "hearthstone_like_collectible_card", "weight": 1},
     {"name": "anime_fantasy_character_card", "weight": 1},
@@ -825,12 +859,26 @@ def build_text_rule(student_nickname: str, level: int, rarity: str) -> dict[str,
     }
 
 
+def build_border_rule(border: str, rarity: str) -> dict[str, Any]:
+    del rarity  # reserved for future border/rarity cross-tuning
+    normalized = str(border or "bronze").strip().lower()
+    rule = BORDER_STYLE_RULES.get(normalized, BORDER_STYLE_RULES["bronze"])
+    return {
+        "border_style": normalized,
+        "material_name": rule["material_name"],
+        "frame_prompt": rule["prompt"],
+        "accent_rule": rule["accent"],
+        "layout_rule": "the decorative border must stay on the outer frame and must not intrude into the character face area",
+    }
+
+
 def assemble_direction_spec(
     unlock_stage: str,
     style_profile: str,
     camera_spec: dict[str, Any],
     object_rule: dict[str, Any],
     text_rule: dict[str, Any],
+    border_rule: dict[str, Any],
     style_hint: str | None = None,
 ) -> dict[str, Any]:
     direction = {
@@ -839,6 +887,7 @@ def assemble_direction_spec(
         **camera_spec,
         "object_rule": object_rule,
         "text_rule": text_rule,
+        "border_rule": border_rule,
     }
     if style_hint:
         direction["style_hint"] = style_hint.strip()
@@ -892,12 +941,17 @@ def build_prompt_spec(
         level=character_facts["level"],
         rarity=character_facts["rarity"],
     )
+    border_rule = build_border_rule(
+        border=character_facts["border"],
+        rarity=character_facts["rarity"],
+    )
     direction_spec = assemble_direction_spec(
         unlock_stage=unlock_stage,
         style_profile=style_profile,
         camera_spec=camera_spec,
         object_rule=object_rule,
         text_rule=text_rule,
+        border_rule=border_rule,
         style_hint=style_hint,
     )
 
@@ -913,6 +967,7 @@ def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
     direction = spec["direction_spec"]
     object_rule = direction["object_rule"]
     text_rule = direction["text_rule"]
+    border_rule = direction["border_rule"]
 
     lines = [
         "Confirmed character facts:",
@@ -924,6 +979,7 @@ def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
         f"- background: {facts.get('background') or 'modest fantasy setting'}",
         f"- level: {facts.get('level')}",
         f"- rarity: {facts.get('rarity')}",
+        f"- border material: {border_rule['material_name']}",
     ]
     if facts.get("race_mandatory_traits"):
         lines.extend([
@@ -983,6 +1039,11 @@ def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
         f"- {object_rule['visibility_rule']}",
         f"- forbidden: {', '.join(object_rule['forbidden_objects'])}",
         "",
+        "Border rule:",
+        f"- {border_rule['frame_prompt']}",
+        f"- {border_rule['accent_rule']}",
+        f"- {border_rule['layout_rule']}",
+        "",
         "Card text rule:",
         "- render readable English card text in the image",
         (
@@ -1000,7 +1061,12 @@ def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_style_prefix(level: int, rarity: str, style_profile: str | None = None) -> str:
+def build_style_prefix(
+    level: int,
+    rarity: str,
+    border: str = "bronze",
+    style_profile: str | None = None,
+) -> str:
     """Build a compatible style prefix for the current worker flow.
 
     This legacy entry point is kept because worker.py still calls it directly.
@@ -1011,7 +1077,8 @@ def build_style_prefix(level: int, rarity: str, style_profile: str | None = None
     base = STYLE_BLOCK_BASE.get(profile, STYLE_BLOCK_BASE["hearthstone_like_collectible_card"])
     atmosphere = _lookup_level_atmosphere(level)
     visual = RARITY_VISUAL.get(rarity, RARITY_VISUAL["N"])
-    return f"{base}, {atmosphere}, {visual}."
+    border_rule = build_border_rule(border=border, rarity=rarity)
+    return f"{base}, {atmosphere}, {visual}, {border_rule['frame_prompt']}, {border_rule['accent_rule']}."
 
 
 def build_structured_description(
