@@ -17,6 +17,9 @@ Your task is to convert structured character facts and visual direction into one
 Rules:
 - Do not change confirmed character facts.
 - Do not change the object rule.
+- When an additional style hint is provided, follow it without overriding confirmed character facts, unlock-stage restrictions, or object rules.
+- Treat all mandatory race traits, gender presentation rules, and conflict-resolution rules as hard visual requirements.
+- Avoid race drift and gender drift when those rules are provided.
 - Do not add extra characters, creatures, companions, mounts, props, weapons, or tools unless explicitly allowed.
 - Do not show any visible blade, hilt, dagger, staff, or combat item when the object rule says the character is unarmed.
 - Respect the visual direction exactly.

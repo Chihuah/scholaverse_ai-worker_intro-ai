@@ -29,6 +29,8 @@ async def _process_job(job) -> None:
         job.card_config,
         job.learning_data,
         job.student_nickname,
+        rng_seed=job.requested_seed,
+        style_hint=job.style_hint,
     )
     structured_desc = render_prompt_spec_for_llm(prompt_spec)
     active_ollama_model = job.ollama_model_override or settings.ollama_model

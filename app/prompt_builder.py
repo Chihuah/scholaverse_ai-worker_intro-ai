@@ -7,6 +7,8 @@ that spec into a stable text block for the LLM. Legacy public functions are
 kept for compatibility with the current worker flow.
 """
 
+import hashlib
+import json
 import random
 from typing import Any
 
@@ -16,6 +18,7 @@ RACE_MAP: dict[str, str] = {
     "human": "human",
     "orc": "orc",
     "dwarf": "dwarf",
+    "goblin": "goblin",
     "dragon": "dragonborn",
     "pixie": "pixie",
     "plant": "plant humanoid",
@@ -26,6 +29,162 @@ GENDER_MAP: dict[str, str] = {
     "male": "male",
     "female": "female",
     "neutral": "androgynous",
+}
+
+RACE_VISUAL_RULES: dict[str, dict[str, list[str]]] = {
+    "elf": {
+        "mandatory": [
+            "slender fantasy build",
+            "long pointed ears",
+            "refined angular facial features",
+            "graceful elegant fantasy presence",
+        ],
+        "forbidden": [
+            "ordinary rounded human ears",
+            "plain fully human facial proportions",
+        ],
+    },
+    "human": {
+        "mandatory": [
+            "fully human anatomy",
+            "ordinary human ears",
+            "human skin and facial structure",
+        ],
+        "forbidden": [
+            "non-human ears",
+            "scales",
+            "slime body texture",
+            "plant bark skin",
+            "tusks",
+        ],
+    },
+    "orc": {
+        "mandatory": [
+            "broad heavy build",
+            "green or gray skin",
+            "pronounced lower tusks",
+            "rugged non-human facial structure",
+        ],
+        "forbidden": [
+            "delicate youthful human face",
+            "handsome human portrait with only a slight green tint",
+        ],
+    },
+    "dwarf": {
+        "mandatory": [
+            "short compact body proportions",
+            "sturdy thick torso",
+            "shorter limbs",
+            "broad hands and a powerful dwarf physique",
+        ],
+        "forbidden": [
+            "average-height human proportions",
+            "long-legged silhouette",
+            "slim human teenage body",
+        ],
+    },
+    "goblin": {
+        "mandatory": [
+            "small wiry body",
+            "oversized ears",
+            "sharp nose",
+            "mischievous angular non-human facial features",
+            "greenish goblin skin",
+        ],
+        "forbidden": [
+            "human teenager appearance",
+            "smooth elegant heroic human proportions",
+        ],
+    },
+    "plant": {
+        "mandatory": [
+            "tree-like plant-humanoid anatomy inspired by walking tree beings",
+            "woody bark body structure with branch-like limbs and trunk-like torso forms",
+            "visible vines, moss, leaves, shoots, or small branch growth integrated into the body",
+            "clearly non-human wooden facial structure rather than normal human skin",
+            "an ancient living-tree presence similar to ent-like or groot-like fantasy plant beings",
+        ],
+        "forbidden": [
+            "ordinary human skin",
+            "plain human portrait with only a green palette",
+            "human teenager appearance",
+            "smooth human face with only leaf decorations",
+        ],
+    },
+    "slime": {
+        "mandatory": [
+            "slime-humanoid anatomy",
+            "wet sticky glossy gelatin body material",
+            "clear translucency or semi-transparency in the body",
+            "semi-transparent limbs, edges, or surface layers",
+            "slippery reflective highlights across the slime surface",
+            "soft fluid non-human silhouette cues instead of firm human skin anatomy",
+        ],
+        "forbidden": [
+            "normal opaque human skin",
+            "plain human portrait labeled as slime",
+            "human teenager appearance",
+            "dry matte skin texture",
+        ],
+    },
+    "dragon": {
+        "mandatory": [
+            "dragonborn humanoid anatomy",
+            "visible scales",
+            "reptilian facial structure",
+            "horns, crest, or draconic head features",
+            "clearly non-human draconic skin texture",
+        ],
+        "forbidden": [
+            "smooth ordinary human skin",
+            "human face with only tiny decorative horns",
+        ],
+    },
+    "pixie": {
+        "mandatory": [
+            "small fairy-like fantasy body",
+            "delicate non-human facial structure",
+            "clearly magical pixie presence",
+        ],
+        "forbidden": [
+            "ordinary human adult proportions",
+        ],
+    },
+}
+
+GENDER_VISUAL_RULES: dict[str, dict[str, list[str]]] = {
+    "male": {
+        "mandatory": [
+            "masculine facial structure",
+            "masculine body presentation",
+        ],
+        "forbidden": [
+            "strongly feminine glamour styling",
+        ],
+    },
+    "female": {
+        "mandatory": [
+            "feminine facial structure",
+            "feminine body presentation",
+        ],
+        "forbidden": [
+            "masculine beard",
+            "mustache",
+            "heavy facial hair",
+        ],
+    },
+    "neutral": {
+        "mandatory": [
+            "androgynous facial structure",
+            "gender-ambiguous presentation",
+            "balanced masculine and feminine cues",
+        ],
+        "forbidden": [
+            "strongly masculine jawline and beard",
+            "strongly feminine glamour styling",
+            "clearly binary gender coding",
+        ],
+    },
 }
 
 CLASS_MAP: dict[str, str] = {
@@ -424,6 +583,23 @@ def _fallback_value(mapping: dict[str, str], raw_value: str | None, default: str
     return mapping.get(key, raw_value)
 
 
+def _stable_rng_seed(
+    card_config: dict[str, Any],
+    learning_data: dict[str, Any],
+    student_nickname: str,
+    style_hint: str | None,
+) -> int:
+    payload = {
+        "card_config": card_config,
+        "learning_data": learning_data,
+        "student_nickname": student_nickname,
+        "style_hint": style_hint or "",
+    }
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    digest = hashlib.sha256(encoded.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 def resolve_unlock_stage(card_config: dict[str, Any]) -> str:
     class_name = _get_class_value(card_config)
     weapon_quality = card_config.get("weapon_quality")
@@ -448,6 +624,35 @@ def resolve_combat_style(
     return CLASS_TO_COMBAT_STYLE.get(class_key, "civilian_novice")
 
 
+def _build_conflict_rules(race_key: str | None, gender_key: str | None) -> list[str]:
+    rules: list[str] = []
+
+    if race_key == "dwarf":
+        rules.append("keep unmistakably short compact dwarf proportions")
+        if gender_key in {"female", "neutral"}:
+            rules.append("do not add a beard, mustache, or heavy facial hair")
+
+    if race_key == "goblin":
+        rules.append("do not render the character as a human child or human teenager")
+
+    if race_key in {"plant", "slime"}:
+        rules.append("race material traits must be clearly visible in the skin and body, not only implied by color")
+        rules.append("do not collapse the character into an ordinary human portrait")
+    if race_key == "plant":
+        rules.append("the body should read primarily as a living tree or woody plant being, not a human wearing plant accessories")
+    if race_key == "slime":
+        rules.append("the body should visibly read as wet translucent slime material rather than normal skin")
+
+    if race_key == "dragon":
+        rules.append("keep clearly visible draconic scales and reptilian facial structure")
+        rules.append("do not reduce the design to a human with small horn accessories")
+
+    if gender_key == "neutral":
+        rules.append("keep the presentation visibly androgynous and avoid a strongly male-only or female-only reading")
+
+    return rules
+
+
 def resolve_character_facts(
     card_config: dict[str, Any],
     learning_data: dict[str, Any],
@@ -456,11 +661,17 @@ def resolve_character_facts(
 ) -> dict[str, Any]:
     del learning_data  # reserved for future use
 
+    race_key = _normalize_key(card_config.get("race"))
+    gender_key = _normalize_key(card_config.get("gender"))
     class_name = _metadata_value(attribute_metadata, "class") or _fallback_value(CLASS_MAP, _get_class_value(card_config))
     combat_style = resolve_combat_style(class_name, attribute_metadata)
+    race_rule = RACE_VISUAL_RULES.get(race_key or "", {"mandatory": [], "forbidden": []})
+    gender_rule = GENDER_VISUAL_RULES.get(gender_key or "", {"mandatory": [], "forbidden": []})
 
     facts = {
+        "race_key": race_key,
         "race": _metadata_value(attribute_metadata, "race") or _fallback_value(RACE_MAP, card_config.get("race")),
+        "gender_key": gender_key,
         "gender": _metadata_value(attribute_metadata, "gender") or _fallback_value(GENDER_MAP, card_config.get("gender")),
         "class_name": class_name,
         "combat_style": combat_style,
@@ -474,6 +685,11 @@ def resolve_character_facts(
         "rarity": str(card_config.get("rarity", "N")),
         "border": str(card_config.get("border", "copper")),
         "student_nickname": student_nickname,
+        "race_mandatory_traits": list(race_rule["mandatory"]),
+        "race_forbidden_traits": list(race_rule["forbidden"]),
+        "gender_mandatory_traits": list(gender_rule["mandatory"]),
+        "gender_forbidden_traits": list(gender_rule["forbidden"]),
+        "conflict_rules": _build_conflict_rules(race_key, gender_key),
     }
     return facts
 
@@ -615,6 +831,7 @@ def assemble_direction_spec(
     camera_spec: dict[str, Any],
     object_rule: dict[str, Any],
     text_rule: dict[str, Any],
+    style_hint: str | None = None,
 ) -> dict[str, Any]:
     direction = {
         "unlock_stage": unlock_stage,
@@ -623,6 +840,8 @@ def assemble_direction_spec(
         "object_rule": object_rule,
         "text_rule": text_rule,
     }
+    if style_hint:
+        direction["style_hint"] = style_hint.strip()
     return direction
 
 
@@ -632,8 +851,14 @@ def build_prompt_spec(
     student_nickname: str = "",
     attribute_metadata: dict[str, Any] | None = None,
     rng_seed: int | None = None,
+    style_hint: str | None = None,
 ) -> dict[str, Any]:
-    rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
+    seed_value = (
+        rng_seed
+        if rng_seed is not None
+        else _stable_rng_seed(card_config, learning_data, student_nickname, style_hint)
+    )
+    rng = random.Random(seed_value)
     character_facts = resolve_character_facts(
         card_config=card_config,
         learning_data=learning_data,
@@ -673,6 +898,7 @@ def build_prompt_spec(
         camera_spec=camera_spec,
         object_rule=object_rule,
         text_rule=text_rule,
+        style_hint=style_hint,
     )
 
     return {
@@ -698,6 +924,38 @@ def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
         f"- background: {facts.get('background') or 'modest fantasy setting'}",
         f"- level: {facts.get('level')}",
         f"- rarity: {facts.get('rarity')}",
+    ]
+    if facts.get("race_mandatory_traits"):
+        lines.extend([
+            "",
+            "Mandatory race traits:",
+        ])
+        lines.extend(f"- {rule}" for rule in facts["race_mandatory_traits"])
+    if facts.get("race_forbidden_traits"):
+        lines.extend([
+            "",
+            "Forbidden race drift:",
+        ])
+        lines.extend(f"- {rule}" for rule in facts["race_forbidden_traits"])
+    if facts.get("gender_mandatory_traits"):
+        lines.extend([
+            "",
+            "Gender presentation rules:",
+        ])
+        lines.extend(f"- {rule}" for rule in facts["gender_mandatory_traits"])
+    if facts.get("gender_forbidden_traits"):
+        lines.extend([
+            "",
+            "Forbidden gender drift:",
+        ])
+        lines.extend(f"- {rule}" for rule in facts["gender_forbidden_traits"])
+    if facts.get("conflict_rules"):
+        lines.extend([
+            "",
+            "Conflict-resolution rules:",
+        ])
+        lines.extend(f"- {rule}" for rule in facts["conflict_rules"])
+    lines.extend([
         "",
         "Visual direction:",
         f"- unlock stage: {direction['unlock_stage']}",
@@ -708,7 +966,9 @@ def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
         f"- body orientation: {direction['body_orientation']}",
         f"- pose: {direction['pose_family']}",
         f"- expression: {direction['expression_family']}",
-    ]
+    ])
+    if direction.get("style_hint"):
+        lines.append(f"- additional style hint: {direction['style_hint']}")
     if direction["unlock_stage"] == "no_class":
         lines.append("- do not describe the character as any class, profession, or combat role")
     lines.extend([
@@ -760,6 +1020,7 @@ def build_structured_description(
     student_nickname: str = "",
     attribute_metadata: dict[str, Any] | None = None,
     rng_seed: int | None = None,
+    style_hint: str | None = None,
 ) -> str:
     """Legacy-compatible wrapper.
 
@@ -772,5 +1033,6 @@ def build_structured_description(
         student_nickname=student_nickname,
         attribute_metadata=attribute_metadata,
         rng_seed=rng_seed,
+        style_hint=style_hint,
     )
     return render_prompt_spec_for_llm(spec)
