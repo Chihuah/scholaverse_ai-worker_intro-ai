@@ -20,6 +20,7 @@ import logging
 import time
 from pathlib import Path
 
+import httpx
 from openai import APIError, AsyncOpenAI
 
 from app.config import settings
@@ -41,9 +42,21 @@ def _client() -> AsyncOpenAI:
         raise CloudImageGenError(
             "OPENAI_API_KEY 未設定（vm-ai-worker .env 缺少 openai_api_key）"
         )
+    # 分開設定 connect / read timeout：connect 短（網路斷線快速失敗），
+    # read 長（gpt-image-2 實際生成時間可達數分鐘）。
+    timeout = httpx.Timeout(
+        connect=float(settings.cloud_image_connect_timeout),
+        read=float(settings.cloud_image_timeout),
+        write=30.0,
+        pool=10.0,
+    )
     return AsyncOpenAI(
         api_key=settings.openai_api_key,
-        timeout=float(settings.cloud_image_timeout),
+        timeout=timeout,
+        # 我們自己有 fallback 到本地，不需要 SDK 內建重試（每次重試都會
+        # 再花一個 read timeout 的時間，會把總耗時推到 fallback 之前無
+        # 必要地拖長）
+        max_retries=settings.cloud_image_max_retries,
     )
 
 
@@ -93,10 +106,14 @@ async def generate_cloud_image(
     except APIError as exc:
         logger.error("[cloud] OpenAI APIError: %s", exc)
         raise CloudImageGenError(f"OpenAI API 錯誤：{exc}") from exc
-    except asyncio.TimeoutError as exc:
-        logger.error("[cloud] OpenAI request timed out (%ds)", settings.cloud_image_timeout)
+    except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+        logger.error(
+            "[cloud] OpenAI request timed out (read=%ds, connect=%ds)",
+            settings.cloud_image_timeout,
+            settings.cloud_image_connect_timeout,
+        )
         raise CloudImageGenError(
-            f"OpenAI 回應逾時（{settings.cloud_image_timeout}s）"
+            f"OpenAI 回應逾時（read {settings.cloud_image_timeout}s）"
         ) from exc
     except Exception as exc:
         logger.exception("[cloud] images.generate unexpected error")
