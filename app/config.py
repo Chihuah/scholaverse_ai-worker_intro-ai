@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     job_timeout: int = 300
     overall_job_timeout: int = 600  # 整體 job timeout（秒），涵蓋 Steps 1-5
 
+    # --- 雲端生圖（Phase 1a）---
+    enable_cloud_image_gen: bool = False  # 必須顯式開啟才會接受 backend="cloud"
+    openai_api_key: str | None = None     # 從 .env 讀；放程式碼是禁區
+    cloud_image_model: str = "gpt-image-2"
+    cloud_image_size: str = "880x1280"    # gpt-image-2 支援任意尺寸
+    cloud_image_timeout: int = 90         # OpenAI 回應通常 20~40s，留寬裕
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

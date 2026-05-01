@@ -27,6 +27,14 @@ async def create_generation_job(body: GenerateRequest, request: Request):
             content={"detail": "Service busy. Queue is full, please try again later."},
         )
 
+    # 驗證 backend 值
+    backend = (body.backend or "local").lower()
+    if backend not in ("local", "cloud"):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Invalid backend '{body.backend}'. Use 'local' or 'cloud'."},
+        )
+
     # 建立 GenerationJob
     job = GenerationJob(
         job_id=body.job_id,
@@ -39,6 +47,10 @@ async def create_generation_job(body: GenerateRequest, request: Request):
         learning_data=body.learning_data.model_dump(),
         style_hint=body.style_hint,
         callback_url=body.callback_url,
+        backend=backend,
+        backend_used=backend,
+        cloud_model=body.cloud_model if backend == "cloud" else None,
+        reference_card_id=body.reference_card_id,
     )
 
     # 加入佇列

@@ -44,6 +44,10 @@ class GenerateRequest(BaseModel):
     seed: int | None = None
     ollama_model_override: str | None = None
     callback_url: str
+    # Cloud generation (Phase 1a) ----------------------------------------
+    backend: str = "local"  # "local" | "cloud"
+    cloud_model: str | None = None  # 覆寫預設模型（測試新模型 id 用）
+    reference_card_id: int | None = None  # 預留 Phase 1b（image edit）
 
 
 # === Response ===
@@ -95,6 +99,13 @@ class GenerationCallback(BaseModel):
     lora_used: str | None = None
     seed: int | None = None
     error: str | None = None
+    # Cloud generation (Phase 1a) ----------------------------------------
+    backend_used: str = "local"            # 實際使用的後端
+    cloud_model: str | None = None         # gpt-image-2 / null
+    cloud_mode: str | None = None          # generate / edit / null
+    fallback_from_cloud: bool = False      # cloud 失敗回退本地時 True
+    cloud_error: str | None = None         # fallback 時保留錯誤訊息
+    reference_card_id: int | None = None   # Phase 1b 用
 
 
 # === Queue Status ===

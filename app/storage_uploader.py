@@ -1,5 +1,6 @@
 """vm-db-storage 上傳模組（含 Mock 實作）"""
 
+import json
 import logging
 import shutil
 from datetime import datetime, timezone
@@ -16,7 +17,8 @@ class MockStorageUploader:
     """Mock: 圖片存在 vm-ai-worker 本機 outputs/ 目錄"""
 
     async def upload(
-        self, file_path: str, student_id: str, card_id: int, image_type: str
+        self, file_path: str, student_id: str, card_id: int, image_type: str,
+        metadata: dict | None = None,
     ) -> dict:
         # 組裝目標相對路徑（與 image_path 一致）
         if image_type == "thumbnail":
@@ -52,7 +54,8 @@ class RealStorageUploader:
     RETRY_DELAY = 2  # 秒
 
     async def upload(
-        self, file_path: str, student_id: str, card_id: int, image_type: str
+        self, file_path: str, student_id: str, card_id: int, image_type: str,
+        metadata: dict | None = None,
     ) -> dict:
         url = f"{settings.db_storage_base_url}/api/images/upload"
         last_error: Exception | None = None
@@ -61,14 +64,21 @@ class RealStorageUploader:
             try:
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     with open(file_path, "rb") as f:
+                        form_data: dict[str, str] = {
+                            "student_id": student_id,
+                            "card_id": str(card_id),
+                            "image_type": image_type,
+                        }
+                        # db-storage 只在 image_type='full' 時寫入 generation_metadata，
+                        # 因此縮圖不需要附帶 metadata
+                        if metadata is not None and image_type == "full":
+                            form_data["metadata"] = json.dumps(
+                                metadata, ensure_ascii=False, default=str
+                            )
                         resp = await client.post(
                             url,
                             files={"file": (Path(file_path).name, f, "image/png")},
-                            data={
-                                "student_id": student_id,
-                                "card_id": str(card_id),
-                                "image_type": image_type,
-                            },
+                            data=form_data,
                         )
                         resp.raise_for_status()
                         return resp.json()
@@ -93,7 +103,9 @@ class RealStorageUploader:
             last_error,
         )
         fallback = MockStorageUploader()
-        return await fallback.upload(file_path, student_id, card_id, image_type)
+        return await fallback.upload(
+            file_path, student_id, card_id, image_type, metadata=metadata
+        )
 
 
 def get_uploader() -> MockStorageUploader | RealStorageUploader:
@@ -104,13 +116,15 @@ def get_uploader() -> MockStorageUploader | RealStorageUploader:
 
 
 async def upload_images(
-    full_image_path: str, thumbnail_path: str, student_id: str, card_id: int
+    full_image_path: str, thumbnail_path: str, student_id: str, card_id: int,
+    metadata: dict | None = None,
 ) -> dict:
     """上傳完整圖片與縮圖，回傳 {"full": ..., "thumbnail": ...}"""
     uploader = get_uploader()
 
     full_result = await uploader.upload(
-        full_image_path, student_id, card_id, image_type="full"
+        full_image_path, student_id, card_id,
+        image_type="full", metadata=metadata,
     )
     thumb_result = await uploader.upload(
         thumbnail_path, student_id, card_id, image_type="thumbnail"
