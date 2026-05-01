@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None     # 從 .env 讀；放程式碼是禁區
     cloud_image_model: str = "gpt-image-2"
     cloud_image_size: str = "880x1280"    # gpt-image-2 支援任意尺寸
+    cloud_image_quality: str = "medium"   # low / medium / high / auto；high 預設費用很高
     cloud_image_timeout: int = 300        # gpt-image-2 實測常需數分鐘
     cloud_image_connect_timeout: int = 10
     cloud_image_max_retries: int = 0      # 我們自己的 fallback 已涵蓋；不要疊上 SDK retry

@@ -66,6 +66,7 @@ async def generate_cloud_image(
     *,
     model: str | None = None,
     size: str | None = None,
+    quality: str | None = None,
 ) -> dict:
     """Call OpenAI gpt-image-2 to generate an image, write PNG to `output_path`.
 
@@ -74,6 +75,7 @@ async def generate_cloud_image(
         {
             "model": "gpt-image-2",
             "size": "880x1280",
+            "quality": "medium",
             "generation_time_ms": int,
             "width": 880,
             "height": 1280,
@@ -89,11 +91,12 @@ async def generate_cloud_image(
 
     model_id = model or settings.cloud_image_model
     size_str = size or settings.cloud_image_size
+    quality_str = quality or settings.cloud_image_quality
 
     started = time.monotonic()
     logger.info(
-        "[cloud] images.generate starting model=%s size=%s prompt_len=%d",
-        model_id, size_str, len(prompt),
+        "[cloud] images.generate starting model=%s size=%s quality=%s prompt_len=%d",
+        model_id, size_str, quality_str, len(prompt),
     )
 
     try:
@@ -102,6 +105,7 @@ async def generate_cloud_image(
             model=model_id,
             prompt=prompt,
             size=size_str,
+            quality=quality_str,
         )
     except APIError as exc:
         logger.error("[cloud] OpenAI APIError: %s", exc)
@@ -139,13 +143,14 @@ async def generate_cloud_image(
 
     width, height = _parse_size(size_str)
     logger.info(
-        "[cloud] images.generate done model=%s size=%s elapsed=%dms file=%s",
-        model_id, size_str, elapsed_ms, out,
+        "[cloud] images.generate done model=%s size=%s quality=%s elapsed=%dms file=%s",
+        model_id, size_str, quality_str, elapsed_ms, out,
     )
 
     return {
         "model": model_id,
         "size": size_str,
+        "quality": quality_str,
         "width": width,
         "height": height,
         "generation_time_ms": elapsed_ms,
