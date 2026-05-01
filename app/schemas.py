@@ -103,6 +103,7 @@ class GenerationCallback(BaseModel):
     backend_used: str = "local"            # 實際使用的後端
     cloud_model: str | None = None         # gpt-image-2 / null
     cloud_mode: str | None = None          # generate / edit / null
+    cloud_quality: str | None = None       # low / medium / high / auto
     fallback_from_cloud: bool = False      # cloud 失敗回退本地時 True
     cloud_error: str | None = None         # fallback 時保留錯誤訊息
     reference_card_id: int | None = None   # Phase 1b 用

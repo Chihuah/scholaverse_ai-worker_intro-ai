@@ -66,6 +66,7 @@ async def _run_cloud_image(job, prompt: str) -> str:
     job.backend_used = "cloud"
     job.cloud_model = cloud_meta["model"]
     job.cloud_mode = "generate"
+    job.cloud_quality = cloud_meta.get("quality")
     return output_path
 
 
@@ -87,6 +88,7 @@ def _build_upload_metadata(job) -> dict:
         "backend_used": job.backend_used,
         "cloud_model": job.cloud_model,
         "cloud_mode": job.cloud_mode,
+        "cloud_quality": job.cloud_quality,
         "fallback_from_cloud": job.fallback_from_cloud,
         "cloud_error": job.cloud_error,
         "reference_card_id": job.reference_card_id,
@@ -198,6 +200,7 @@ async def _process_job(job) -> None:
         "backend_used": job.backend_used,
         "cloud_model": job.cloud_model,
         "cloud_mode": job.cloud_mode,
+        "cloud_quality": job.cloud_quality,
         "fallback_from_cloud": job.fallback_from_cloud,
         "cloud_error": job.cloud_error,
         "reference_card_id": job.reference_card_id,

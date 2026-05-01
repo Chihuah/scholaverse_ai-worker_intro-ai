@@ -33,6 +33,7 @@ class GenerationJob:
     backend_used: str = "local"        # 實際使用的後端（fallback 後可能與 backend 不同）
     cloud_model: str | None = None     # 例如 "gpt-image-2"
     cloud_mode: str | None = None      # "generate" | "edit"（Phase 1a 只有 generate）
+    cloud_quality: str | None = None   # "low" | "medium" | "high" | "auto"
     fallback_from_cloud: bool = False  # 雲端失敗回退到本地時為 True
     cloud_error: str | None = None     # 雲端失敗的訊息（fallback 時保留）
     reference_card_id: int | None = None  # 預留給 Phase 1b（image edit）
