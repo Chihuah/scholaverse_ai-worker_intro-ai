@@ -51,6 +51,7 @@ async def create_generation_job(body: GenerateRequest, request: Request):
         backend_used=backend,
         cloud_model=body.cloud_model if backend == "cloud" else None,
         reference_card_id=body.reference_card_id,
+        reference_image_url=body.reference_image_url,
     )
 
     # 加入佇列

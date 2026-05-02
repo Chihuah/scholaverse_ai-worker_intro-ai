@@ -1233,6 +1233,93 @@ def render_prompt_spec_for_cloud_image(spec: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_prompt_spec_for_cloud_edit(spec: dict[str, Any]) -> str:
+    """Render a prompt for gpt-image-2 ``client.images.edit``.
+
+    Companion to :func:`render_prompt_spec_for_cloud_image` for image-edit
+    flows where a reference card image carries the character's locked
+    identity. The reference image is supplied to the OpenAI API separately;
+    this function only produces the text portion of the request.
+
+    Identity preserved from the reference image (face, race, body, gender,
+    hair) is stated explicitly in a "preserve" block; everything that should
+    differ for the new card (class, equipment, weapon, pose, framing,
+    background, atmosphere, rarity, border, and the rolled artistic style)
+    is stated in a "change" block. The preserve list is repeated in the
+    Constraints section per OpenAI's anti-drift guidance.
+    """
+    facts = spec["character_facts"]
+    direction = spec["direction_spec"]
+    object_rule = direction["object_rule"]
+    text_rule = direction["text_rule"]
+    border_rule = direction["border_rule"]
+
+    style_profile = STYLE_PROFILE_ALIASES.get(direction["style_profile"], direction["style_profile"])
+    style_base = STYLE_BLOCK_BASE.get(style_profile, STYLE_BLOCK_BASE["trading_card_painterly"])
+    atmosphere = _lookup_level_atmosphere(int(facts.get("level") or 1))
+    rarity_visual = RARITY_VISUAL.get(str(facts.get("rarity") or "N"), RARITY_VISUAL["N"])
+
+    class_name = facts.get("class_name") or "novice adventurer without a formal class"
+    equipment = facts.get("equipment") or "simple basic clothing"
+    background = facts.get("background") or "modest fantasy background"
+    nickname_text = _quote_literal_text(text_rule["nameplate"]["text"])
+    level_text = _quote_literal_text(text_rule["level_badge"]["text"])
+    rarity_text = _quote_literal_text(text_rule["rarity_mark"]["text"])
+
+    composition_rules_text = _join_rules(direction.get("composition_rules", []))
+    forbidden_traits = _join_rules(
+        list(facts.get("race_forbidden_traits", []))
+        + list(facts.get("gender_forbidden_traits", []))
+        + list(object_rule.get("forbidden_objects", []))
+    )
+
+    no_class_note = ""
+    if direction["unlock_stage"] == "no_class":
+        no_class_note = " Do not depict the character as any class, profession, or combat role."
+
+    lines = [
+        "Continue the character card series using the same character from the reference image. Re-render that character in a new artistic style and a new scene, but keep the character's identity exactly the same.",
+        "",
+        "Preserve from the reference image (do not redesign):",
+        "- exact face: eyes, nose, mouth, jawline, facial proportions, skin texture",
+        "- exact hairstyle, hair color, and hair length",
+        "- race traits: ears, scales, fur, bark, slime translucency, wings, or other species-specific features visible in the reference",
+        "- body proportions, build, height, and gender presentation",
+        "- general overall body and skin color palette",
+        "",
+        "Change for this new card (re-render based on these new facts):",
+        f"- artistic style: re-paint the same character in this new visual style → {style_base}",
+        f"- class / profession: {class_name}.{no_class_note}",
+        f"- clothing and equipment: {equipment} (replace whatever the reference image was wearing)",
+        f"- held object: {object_rule['object_prompt']}; {object_rule['visibility_rule']}",
+        f"- pose: {direction['pose_family']}",
+        f"- expression: {direction['expression_family']}",
+        f"- shot framing: {direction['shot_type']}, {direction['camera_angle']}, {direction['body_orientation']}",
+        f"- background: {background}",
+        f"- atmosphere and lighting: {direction['lighting']}, {direction['mood']}, {direction['color_palette']}, {atmosphere}",
+        f"- rarity visual quality: {rarity_visual}",
+        f"- card border: {border_rule['frame_prompt']}; {border_rule['accent_rule']}; {border_rule['layout_rule']}",
+        "",
+        "Composition requirements:",
+        f"{composition_rules_text or 'single character; clear visual focus; face clearly visible; readable silhouette'}.",
+        "",
+        "Card text (must render exactly):",
+        f"- top-left round metal badge contains exactly the text {level_text}, {text_rule['level_badge'].get('typography', 'bold readable digits')}.",
+        f"- top-right rarity mark contains exactly the text {rarity_text}, {text_rule['rarity_mark'].get('typography', 'bold readable letters')}.",
+        f"- bottom-center compact parchment scroll nameplate contains exactly the text {nickname_text}, {text_rule['nameplate'].get('typography', 'readable fantasy font')}; the scroll occupies only a small lower band of the card.",
+        "",
+        "Constraints:",
+        "- The character is the same person as in the reference image, just at a new moment in their adventure — same face, same race, same body, same gender, same hair.",
+        "- Do not redesign the character's face, race, body, or gender; only re-render in the new style with the new clothing, weapon, pose, and background described above.",
+        "- Single character only; no extra characters, companions, animals, duplicated bodies, or obscured face.",
+        f"- Avoid: {forbidden_traits or 'unintended race, gender, or object drift'}.",
+        f"- Text rules: {_join_rules(text_rule['layout_constraints'])}.",
+        "- Do not render any other letters, captions, labels, title text, subtitles, logos, signatures, watermarks, or UI text.",
+        "- All characters must be fully clothed in tasteful fantasy attire suitable for an educational platform; no nudity, no exposed cleavage, no bare midriff, no revealing or skin-exposing armor.",
+    ]
+    return "\n".join(lines)
+
+
 def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
     facts = spec["character_facts"]
     direction = spec["direction_spec"]

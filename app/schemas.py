@@ -44,10 +44,11 @@ class GenerateRequest(BaseModel):
     seed: int | None = None
     ollama_model_override: str | None = None
     callback_url: str
-    # Cloud generation (Phase 1a) ----------------------------------------
+    # Cloud generation (Phase 1a / 1b) -----------------------------------
     backend: str = "local"  # "local" | "cloud"
     cloud_model: str | None = None  # 覆寫預設模型（測試新模型 id 用）
-    reference_card_id: int | None = None  # 預留 Phase 1b（image edit）
+    reference_card_id: int | None = None     # Phase 1b：錨點卡 ID（純記錄用）
+    reference_image_url: str | None = None   # Phase 1b：錨點卡圖片 URL（worker 用來抓 reference bytes）
 
 
 # === Response ===

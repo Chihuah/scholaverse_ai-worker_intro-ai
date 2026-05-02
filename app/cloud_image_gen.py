@@ -1,10 +1,12 @@
-"""Cloud image generation via OpenAI's gpt-image-2 (Phase 1a).
+"""Cloud image generation via OpenAI's gpt-image-2.
 
-Phase 1a covers `images.generate` only (text → image).
-Image-edit (multi-image reference for character consistency) is Phase 1b.
+Phase 1a covered `images.generate` (text → image).
+Phase 1b adds `images.edit` (text + reference image → image) for character
+consistency across a student's card series.
 
 The module is opt-in: if `settings.enable_cloud_image_gen` is False, callers
-should not invoke `generate_cloud_image()` — it will raise immediately.
+should not invoke `generate_cloud_image()` / `edit_cloud_image()` — they
+will raise immediately.
 
 The OpenAI Python SDK (`openai>=1.50`) is used. Auth is via the
 `OPENAI_API_KEY` environment variable (read by the SDK by default), so we
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import time
 from pathlib import Path
@@ -163,3 +166,127 @@ def _parse_size(size_str: str) -> tuple[int, int]:
         return int(w), int(h)
     except (ValueError, AttributeError):
         return 0, 0
+
+
+async def edit_cloud_image(
+    prompt: str,
+    reference_images: list[tuple[str, bytes]],
+    output_path: str,
+    *,
+    model: str | None = None,
+    size: str | None = None,
+    quality: str | None = None,
+) -> dict:
+    """Call OpenAI gpt-image-2 ``images.edit`` with reference image(s).
+
+    Args:
+        prompt: Edit instruction text (rendered by
+            ``render_prompt_spec_for_cloud_edit``).
+        reference_images: list of ``(filename, png_bytes)`` tuples. The
+            filename's extension is used by the OpenAI SDK for content-type
+            detection — keep ``.png`` to match what we upload.
+        output_path: Local PNG path to write the result to.
+        model / size / quality: Optional overrides; default to
+            ``settings.cloud_image_*``.
+
+    Returns metadata dict::
+
+        {
+            "model": "gpt-image-2",
+            "size": "880x1280",
+            "quality": "medium",
+            "width": 880,
+            "height": 1280,
+            "generation_time_ms": int,
+            "mode": "edit",
+            "reference_count": int,
+        }
+
+    Raises ``CloudImageGenError`` on any failure (auth, network, API, missing
+    reference). Caller is responsible for catching and falling back.
+    """
+    if not is_enabled():
+        raise CloudImageGenError(
+            "雲端生圖未啟用（enable_cloud_image_gen=False 或未設 OPENAI_API_KEY）"
+        )
+    if not reference_images:
+        raise CloudImageGenError("edit_cloud_image 需要至少一張參考圖")
+
+    model_id = model or settings.cloud_image_model
+    size_str = size or settings.cloud_image_size
+    quality_str = quality or settings.cloud_image_quality
+
+    started = time.monotonic()
+    logger.info(
+        "[cloud-edit] images.edit starting model=%s ref=%d size=%s quality=%s prompt_len=%d",
+        model_id, len(reference_images), size_str, quality_str, len(prompt),
+    )
+
+    # Wrap each (filename, bytes) in a BytesIO with .name so the OpenAI SDK
+    # can derive the content-type from the extension.
+    image_files = []
+    for filename, data in reference_images:
+        buf = io.BytesIO(data)
+        buf.name = filename
+        image_files.append(buf)
+
+    try:
+        client = _client()
+        # OpenAI SDK accepts either a single file-like or a list of file-like
+        # objects for the `image` parameter; we always pass a list for clarity.
+        result = await client.images.edit(
+            model=model_id,
+            image=image_files if len(image_files) > 1 else image_files[0],
+            prompt=prompt,
+            size=size_str,
+            quality=quality_str,
+        )
+    except APIError as exc:
+        logger.error("[cloud-edit] OpenAI APIError: %s", exc)
+        raise CloudImageGenError(f"OpenAI API 錯誤（edit）：{exc}") from exc
+    except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+        logger.error(
+            "[cloud-edit] OpenAI request timed out (read=%ds, connect=%ds)",
+            settings.cloud_image_timeout,
+            settings.cloud_image_connect_timeout,
+        )
+        raise CloudImageGenError(
+            f"OpenAI 圖生圖回應逾時（read {settings.cloud_image_timeout}s）"
+        ) from exc
+    except Exception as exc:
+        logger.exception("[cloud-edit] images.edit unexpected error")
+        raise CloudImageGenError(f"雲端圖生圖失敗：{exc}") from exc
+
+    if not result.data:
+        raise CloudImageGenError("OpenAI 回應未包含 image data")
+
+    b64 = getattr(result.data[0], "b64_json", None)
+    if not b64:
+        raise CloudImageGenError("OpenAI 回應 data[0].b64_json 為空")
+
+    try:
+        png_bytes = base64.b64decode(b64)
+    except (ValueError, TypeError) as exc:
+        raise CloudImageGenError(f"無法解碼回應 base64：{exc}") from exc
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(png_bytes)
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    width, height = _parse_size(size_str)
+    logger.info(
+        "[cloud-edit] images.edit done model=%s ref=%d size=%s quality=%s elapsed=%dms file=%s",
+        model_id, len(reference_images), size_str, quality_str, elapsed_ms, out,
+    )
+
+    return {
+        "model": model_id,
+        "size": size_str,
+        "quality": quality_str,
+        "width": width,
+        "height": height,
+        "generation_time_ms": elapsed_ms,
+        "mode": "edit",
+        "reference_count": len(reference_images),
+    }

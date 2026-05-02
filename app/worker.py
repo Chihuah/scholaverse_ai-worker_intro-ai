@@ -6,9 +6,12 @@ from datetime import datetime, timezone
 
 from pathlib import Path
 
+import httpx
+
 from app.callback import send_callback
 from app.cloud_image_gen import (
     CloudImageGenError,
+    edit_cloud_image,
     generate_cloud_image,
     is_enabled as cloud_is_enabled,
 )
@@ -21,6 +24,7 @@ from app.prompt_builder import (
 )
 from app.prompt_builder_cloud_v2 import (
     build_prompt_spec as build_prompt_spec_cloud,
+    render_prompt_spec_for_cloud_edit,
     render_prompt_spec_for_cloud_image,
 )
 from app.queue import JobQueue
@@ -28,6 +32,9 @@ from app.sd_runner import create_thumbnail, run_sd_cli
 from app.storage_uploader import upload_images
 
 logger = logging.getLogger(__name__)
+
+
+REFERENCE_FETCH_TIMEOUT = 30.0  # seconds
 
 
 async def _build_local_prompt(job) -> tuple[str, dict]:
@@ -67,6 +74,46 @@ def _build_cloud_prompt(job) -> str:
     return render_prompt_spec_for_cloud_image(prompt_spec)
 
 
+def _build_cloud_edit_prompt(job) -> str:
+    """Build the change-only / preserve-list prompt for ``client.images.edit``.
+
+    Same RNG seed as the generate path, so for the same card_config + nickname
+    the camera/style choices are deterministic. Sets job.llm_model = None.
+    """
+    prompt_spec = build_prompt_spec_cloud(
+        job.card_config,
+        job.learning_data,
+        job.student_nickname,
+        rng_seed=job.requested_seed,
+        style_hint=job.style_hint,
+    )
+    job.llm_model = None
+    return render_prompt_spec_for_cloud_edit(prompt_spec)
+
+
+async def _fetch_reference_image(url: str) -> bytes:
+    """GET the reference image bytes from db-storage (or wherever URL points).
+
+    Raises CloudImageGenError so the caller can treat it as a cloud-edit
+    failure and fall back to cloud generate / local SD.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=REFERENCE_FETCH_TIMEOUT) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.content
+    except httpx.TimeoutException as exc:
+        raise CloudImageGenError(
+            f"參考圖抓取逾時（{REFERENCE_FETCH_TIMEOUT}s）：{url}"
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        raise CloudImageGenError(
+            f"參考圖抓取 HTTP {exc.response.status_code}：{url}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise CloudImageGenError(f"參考圖抓取網路錯誤：{exc}") from exc
+
+
 async def _run_local_image(job, prompt: str, prompt_spec: dict) -> str:
     """Run sd-cli pipeline. Sets job.lora_used / job.seed / job.final_prompt
     and returns the local PNG output path."""
@@ -88,9 +135,9 @@ async def _run_local_image(job, prompt: str, prompt_spec: dict) -> str:
 
 
 async def _run_cloud_image(job, prompt: str) -> str:
-    """Call OpenAI gpt-image-2 (Phase 1a, generate-only). Sets cloud-related
-    job fields and returns local PNG output path. Raises on failure so the
-    caller can decide whether to fallback to local."""
+    """Call OpenAI gpt-image-2 ``images.generate``. Sets cloud-related job
+    fields and returns local PNG output path. Raises on failure so the caller
+    can decide whether to fallback."""
     output_dir = Path(settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = str(output_dir / f"{job.job_id}_cloud.png")
@@ -107,6 +154,35 @@ async def _run_cloud_image(job, prompt: str) -> str:
     job.backend_used = "cloud"
     job.cloud_model = cloud_meta["model"]
     job.cloud_mode = "generate"
+    job.cloud_quality = cloud_meta.get("quality")
+    return output_path
+
+
+async def _run_cloud_edit(job, prompt: str, reference_bytes: bytes) -> str:
+    """Call OpenAI gpt-image-2 ``images.edit`` with a single reference image.
+
+    Phase 1b: image edit for character consistency. Sets cloud-related job
+    fields (with cloud_mode='edit') and returns local PNG output path.
+    Raises on failure so the caller can fall back to cloud generate / local.
+    """
+    output_dir = Path(settings.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = str(output_dir / f"{job.job_id}_cloud_edit.png")
+
+    ref_filename = f"reference_card_{job.reference_card_id or 'unknown'}.png"
+
+    cloud_meta = await edit_cloud_image(
+        prompt=prompt,
+        reference_images=[(ref_filename, reference_bytes)],
+        output_path=output_path,
+        model=job.cloud_model or settings.cloud_image_model,
+    )
+    job.lora_used = None
+    job.seed = None
+    job.final_prompt = prompt
+    job.backend_used = "cloud"
+    job.cloud_model = cloud_meta["model"]
+    job.cloud_mode = "edit"
     job.cloud_quality = cloud_meta.get("quality")
     return output_path
 
@@ -164,14 +240,48 @@ def _build_upload_metadata(job) -> dict:
     }
 
 
+async def _try_cloud_generate_then_local(job, reason_for_attempt: str) -> str:
+    """Run cloud generate, falling back to local SD on failure.
+
+    Used by:
+      - the plain cloud-generate path (no anchor)
+      - the cloud-edit path's first-level fallback (edit failed → try generate)
+
+    The caller is responsible for setting fallback markers BEFORE this if the
+    invocation itself represents a fallback (e.g., from a failed edit).
+    """
+    logger.info("[cloud-generate] %s — building prompt...", reason_for_attempt)
+    cloud_prompt = _build_cloud_prompt(job)
+    job.prompt = cloud_prompt
+    logger.info(
+        "[cloud-generate] prompt built (%d chars), calling gpt-image-2 ...",
+        len(cloud_prompt),
+    )
+    try:
+        output_path = await _run_cloud_image(job, cloud_prompt)
+        logger.info("[cloud-generate] success: %s", output_path)
+        return output_path
+    except CloudImageGenError as exc:
+        # Last-resort fallback to local SD
+        prior_error = job.cloud_error
+        combined_error = (
+            f"{prior_error}; cloud generate also failed: {exc}"
+            if prior_error
+            else str(exc)
+        )
+        return await _fallback_to_local(job, combined_error)
+
+
 async def _process_job(job) -> None:
     """Process a generation job (Steps 1~5). Wrapped with overall timeout.
 
     Backend selection:
       - backend=local: Ollama prompt → unload → sd-cli (unchanged from Phase 1a)
-      - backend=cloud + cloud enabled: cloud-v2 prompt (no Ollama) → gpt-image-2
-        - on cloud failure: fallback to local (which DOES need Ollama)
       - backend=cloud + cloud disabled: fallback to local immediately
+      - backend=cloud + cloud enabled + reference_image_url:
+          → cloud edit (Phase 1b) → on failure: cloud generate → on failure: local
+      - backend=cloud + cloud enabled + no reference:
+          → cloud generate → on failure: local
     """
     job.status = "processing"
 
@@ -182,20 +292,51 @@ async def _process_job(job) -> None:
             output_path = await _fallback_to_local(
                 job, "雲端生圖未啟用（enable_cloud_image_gen=False 或未設 OPENAI_API_KEY）"
             )
-        else:
-            logger.info("[Step 1/cloud] Building cloud prompt (skipping Ollama)...")
-            cloud_prompt = _build_cloud_prompt(job)
-            job.prompt = cloud_prompt
+        elif job.reference_image_url:
+            # Phase 1b: image edit path with two-level fallback.
             logger.info(
-                "[Step 1/cloud] Cloud prompt built (%d chars)", len(cloud_prompt)
+                "[Step 1/cloud-edit] Building edit prompt (anchor card_id=%s)...",
+                job.reference_card_id,
+            )
+            edit_prompt = _build_cloud_edit_prompt(job)
+            job.prompt = edit_prompt
+            logger.info(
+                "[Step 1/cloud-edit] Edit prompt built (%d chars)", len(edit_prompt)
             )
 
             try:
-                logger.info("[Step 2/cloud] Calling gpt-image-2 ...")
-                output_path = await _run_cloud_image(job, cloud_prompt)
-                logger.info("[Step 2/cloud] Image generated: %s", output_path)
+                logger.info(
+                    "[Step 1.5/cloud-edit] Fetching reference image: %s",
+                    job.reference_image_url,
+                )
+                ref_bytes = await _fetch_reference_image(job.reference_image_url)
+                logger.info(
+                    "[Step 1.5/cloud-edit] Reference image fetched (%d bytes)",
+                    len(ref_bytes),
+                )
+
+                logger.info("[Step 2/cloud-edit] Calling gpt-image-2 edit ...")
+                output_path = await _run_cloud_edit(job, edit_prompt, ref_bytes)
+                logger.info("[Step 2/cloud-edit] Image edited: %s", output_path)
             except CloudImageGenError as exc:
-                output_path = await _fallback_to_local(job, str(exc))
+                # Cloud edit failed → try cloud generate (preserves cloud quality
+                # even if character consistency is lost). Mark the fallback now
+                # so callback metadata reflects what happened.
+                logger.warning(
+                    "[fallback-1] cloud edit failed for job=%s err=%s — "
+                    "trying cloud generate next",
+                    job.job_id, exc,
+                )
+                job.fallback_from_cloud = True
+                job.cloud_error = f"edit failed: {exc}"
+                output_path = await _try_cloud_generate_then_local(
+                    job, "cloud-edit failure → fallback to cloud-generate"
+                )
+        else:
+            # Cloud generate path (no anchor) with single-level fallback.
+            output_path = await _try_cloud_generate_then_local(
+                job, "no reference image — direct cloud generate"
+            )
     else:
         # backend == "local"
         logger.info("[Step 1/local] Generating prompt via Ollama...")

@@ -36,7 +36,8 @@ class GenerationJob:
     cloud_quality: str | None = None   # "low" | "medium" | "high" | "auto"
     fallback_from_cloud: bool = False  # 雲端失敗回退到本地時為 True
     cloud_error: str | None = None     # 雲端失敗的訊息（fallback 時保留）
-    reference_card_id: int | None = None  # 預留給 Phase 1b（image edit）
+    reference_card_id: int | None = None     # Phase 1b：用作 image edit 錨點的卡片 ID
+    reference_image_url: str | None = None   # Phase 1b：錨點卡的圖片 URL（worker 用來抓取 reference bytes）
 
 
 class JobQueue:
