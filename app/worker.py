@@ -1,4 +1,4 @@
-"""Worker Loop ? ???????????????????"""
+"""Worker Loop — 串接 LLM prompt、雲端／本地生圖、上傳與 callback。"""
 
 import asyncio
 import logging
@@ -19,11 +19,52 @@ from app.prompt_builder import (
     build_style_prefix,
     render_prompt_spec_for_llm,
 )
+from app.prompt_builder_cloud_v2 import (
+    build_prompt_spec as build_prompt_spec_cloud,
+    render_prompt_spec_for_cloud_image,
+)
 from app.queue import JobQueue
 from app.sd_runner import create_thumbnail, run_sd_cli
 from app.storage_uploader import upload_images
 
 logger = logging.getLogger(__name__)
+
+
+async def _build_local_prompt(job) -> tuple[str, dict]:
+    """Build the LLM-rewritten prompt for local SD via Ollama.
+
+    Sets job.llm_model. Returns (rewritten_prompt, prompt_spec) so the caller
+    can derive style_prefix / border / etc. for sd-cli from the same spec.
+    """
+    prompt_spec = build_prompt_spec(
+        job.card_config,
+        job.learning_data,
+        job.student_nickname,
+        rng_seed=job.requested_seed,
+        style_hint=job.style_hint,
+    )
+    structured_desc = render_prompt_spec_for_llm(prompt_spec)
+    active_ollama_model = job.ollama_model_override or settings.ollama_model
+    prompt = await generate_prompt(structured_desc, model_name=active_ollama_model)
+    job.llm_model = active_ollama_model
+    return prompt, prompt_spec
+
+
+def _build_cloud_prompt(job) -> str:
+    """Build a direct-to-image prompt using the cloud-optimized renderer.
+
+    Skips Ollama entirely. Sets job.llm_model = None to make it explicit that
+    no LLM rewriting layer was used.
+    """
+    prompt_spec = build_prompt_spec_cloud(
+        job.card_config,
+        job.learning_data,
+        job.student_nickname,
+        rng_seed=job.requested_seed,
+        style_hint=job.style_hint,
+    )
+    job.llm_model = None
+    return render_prompt_spec_for_cloud_image(prompt_spec)
 
 
 async def _run_local_image(job, prompt: str, prompt_spec: dict) -> str:
@@ -70,6 +111,34 @@ async def _run_cloud_image(job, prompt: str) -> str:
     return output_path
 
 
+async def _fallback_to_local(job, reason: str) -> str:
+    """Cloud → local fallback path.
+
+    Used when:
+      - backend=cloud but cloud is disabled (no API key / feature flag off)
+      - backend=cloud but the OpenAI call itself failed
+
+    Sets job.fallback_from_cloud + job.cloud_error, then runs the full local
+    pipeline (Ollama prompt → unload → sd-cli). Returns the SD output path.
+    """
+    job.fallback_from_cloud = True
+    job.cloud_error = reason
+    logger.warning(
+        "[fallback] cloud → local for job=%s reason=%s",
+        job.job_id, reason,
+    )
+
+    logger.info("[fallback/Step 1] Generating Ollama prompt (post-cloud-failure)...")
+    prompt, prompt_spec = await _build_local_prompt(job)
+    job.prompt = prompt
+
+    logger.info("[fallback/Step 1.5] Unloading Ollama to free GPU VRAM...")
+    await unload_model(model_name=job.llm_model)
+
+    logger.info("[fallback/Step 2] Running sd-cli image generation...")
+    return await _run_local_image(job, prompt, prompt_spec)
+
+
 def _build_upload_metadata(job) -> dict:
     """Metadata dict to attach to the db-storage upload (full image only)."""
     return {
@@ -96,64 +165,50 @@ def _build_upload_metadata(job) -> dict:
 
 
 async def _process_job(job) -> None:
-    """Process a generation job (Steps 1~5). Wrapped with overall timeout."""
+    """Process a generation job (Steps 1~5). Wrapped with overall timeout.
+
+    Backend selection:
+      - backend=local: Ollama prompt → unload → sd-cli (unchanged from Phase 1a)
+      - backend=cloud + cloud enabled: cloud-v2 prompt (no Ollama) → gpt-image-2
+        - on cloud failure: fallback to local (which DOES need Ollama)
+      - backend=cloud + cloud disabled: fallback to local immediately
+    """
     job.status = "processing"
 
-    # Step 1: LLM prompt generation (always; both backends use same prompt)
-    logger.info("[Step 1] Generating prompt via Ollama...")
-    prompt_spec = build_prompt_spec(
-        job.card_config,
-        job.learning_data,
-        job.student_nickname,
-        rng_seed=job.requested_seed,
-        style_hint=job.style_hint,
-    )
-    structured_desc = render_prompt_spec_for_llm(prompt_spec)
-    active_ollama_model = job.ollama_model_override or settings.ollama_model
-    prompt = await generate_prompt(structured_desc, model_name=active_ollama_model)
-    job.prompt = prompt
-    job.llm_model = active_ollama_model
-    logger.info(
-        "[Step 1] Prompt generated: %s",
-        prompt[:100] + "..." if len(prompt) > 100 else prompt,
-    )
-
-    # Step 1.5: Unload Ollama model to free GPU VRAM (only relevant for local)
-    if job.backend == "local" or not cloud_is_enabled():
-        logger.info("[Step 1.5] Unloading Ollama model to free GPU VRAM...")
-        await unload_model(model_name=active_ollama_model)
-
-    # Step 2: image generation — branch on requested backend
     output_path: str
+
     if job.backend == "cloud":
         if not cloud_is_enabled():
-            logger.warning(
-                "[Step 2/cloud] cloud requested but disabled; "
-                "falling back to local. job=%s",
-                job.job_id,
+            output_path = await _fallback_to_local(
+                job, "雲端生圖未啟用（enable_cloud_image_gen=False 或未設 OPENAI_API_KEY）"
             )
-            job.fallback_from_cloud = True
-            job.cloud_error = "雲端生圖未啟用（enable_cloud_image_gen=False）"
-            # Make sure Ollama is unloaded before SD takes the GPU
-            await unload_model(model_name=active_ollama_model)
-            output_path = await _run_local_image(job, prompt, prompt_spec)
         else:
+            logger.info("[Step 1/cloud] Building cloud prompt (skipping Ollama)...")
+            cloud_prompt = _build_cloud_prompt(job)
+            job.prompt = cloud_prompt
+            logger.info(
+                "[Step 1/cloud] Cloud prompt built (%d chars)", len(cloud_prompt)
+            )
+
             try:
                 logger.info("[Step 2/cloud] Calling gpt-image-2 ...")
-                output_path = await _run_cloud_image(job, prompt)
+                output_path = await _run_cloud_image(job, cloud_prompt)
                 logger.info("[Step 2/cloud] Image generated: %s", output_path)
             except CloudImageGenError as exc:
-                logger.warning(
-                    "[Step 2/cloud] Cloud generation failed, falling back to "
-                    "local. job=%s err=%s",
-                    job.job_id, exc,
-                )
-                job.fallback_from_cloud = True
-                job.cloud_error = str(exc)
-                # Free GPU before SD starts
-                await unload_model(model_name=active_ollama_model)
-                output_path = await _run_local_image(job, prompt, prompt_spec)
+                output_path = await _fallback_to_local(job, str(exc))
     else:
+        # backend == "local"
+        logger.info("[Step 1/local] Generating prompt via Ollama...")
+        prompt, prompt_spec = await _build_local_prompt(job)
+        job.prompt = prompt
+        logger.info(
+            "[Step 1/local] Prompt generated: %s",
+            prompt[:100] + "..." if len(prompt) > 100 else prompt,
+        )
+
+        logger.info("[Step 1.5/local] Unloading Ollama to free GPU VRAM...")
+        await unload_model(model_name=job.llm_model)
+
         logger.info("[Step 2/local] Running sd-cli image generation...")
         output_path = await _run_local_image(job, prompt, prompt_spec)
         logger.info(
@@ -213,23 +268,23 @@ async def _process_job(job) -> None:
 
 
 async def worker_loop(queue: JobQueue) -> None:
-    """???????????????
+    """主要 worker loop。從 queue 取出 job 後依序處理：
 
-    ???
-      Step 1:   LLM prompt ?? (Ollama)
-      Step 1.5: ?? Ollama ?? (keep_alive=0??? VRAM)
-      Step 2:   sd-cli ???
-      Step 3:   ???? (Pillow)
-      Step 4:   ??? vm-db-storage?? mock?
-      Step 5:   ?? vm-web-server
+    流程：
+      Step 1:   Prompt 構建（雲端：跳過 Ollama；本地：Ollama qwen2.5-14b）
+      Step 1.5: 卸載 Ollama 釋放 VRAM（僅本地路徑）
+      Step 2:   生圖（cloud 走 gpt-image-2；local 走 sd-cli）
+      Step 3:   縮圖（Pillow）
+      Step 4:   上傳到 vm-db-storage
+      Step 5:   callback 回 vm-web-server
 
-    ?? timeout: settings.overall_job_timeout??? 600s??
-    ???????????? worker ??????
+    雲端失敗時 fallback 到本地，並補呼叫 Ollama 取得 SD 可用的改寫 prompt。
+
+    整個 job 包在 settings.overall_job_timeout（預設 600s）的 timeout 中。
     """
     logger.info("Worker loop started, waiting for jobs...")
 
     while True:
-        # ? queue ?? job_id
         job_id = await queue._queue.get()
         job = queue.get_job(job_id)
 
