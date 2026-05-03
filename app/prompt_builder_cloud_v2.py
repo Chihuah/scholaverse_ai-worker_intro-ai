@@ -401,6 +401,79 @@ STYLE_PROFILE_ALIASES: dict[str, str] = {
     "painterly_fantasy_card": "classical_oil_painting",
 }
 
+# ----------------------------------------------------------------------------
+# Camera viewpoint dictionaries (global, equal-weight random per card).
+#
+# Two orthogonal axes:
+#   * CAMERA_ORIENTATION_PROFILES — horizontal / framing (where the camera
+#     looks at the character from), 6 entries.
+#   * CAMERA_HEIGHT_PROFILES — vertical / tilt (camera height relative to
+#     the character), 6 entries based on the standard cinematography chart
+#     (eye / low / high / bird's-eye / worm's-eye / dutch).
+#
+# Each card draws one orientation and one height independently with equal
+# weights. The previously archetype-bound `camera_angle` and
+# `body_orientation` keys have been removed in favour of these two globals
+# so that the dramatic spectrum (worm's-eye, dutch, bird's-eye) is actually
+# reachable, and so orientation / height can never produce conflicting
+# combinations within a single archetype.
+# ----------------------------------------------------------------------------
+
+CAMERA_ORIENTATION_PROFILES: dict[str, str] = {
+    "frontal_centered_view": (
+        "frontal centered view, symmetrical card composition, "
+        "character facing the viewer directly"
+    ),
+    "left_three_quarter_view": (
+        "three-quarter view from the character's left side, "
+        "showing one side of the face and torso depth"
+    ),
+    "right_three_quarter_view": (
+        "three-quarter view from the character's right side, "
+        "showing one side of the face and torso depth"
+    ),
+    "over_the_shoulder_view": (
+        "over-the-shoulder view, character partly turned away while looking back toward the viewer, "
+        "face still clearly visible and readable"
+    ),
+    "side_profile_view": (
+        "clean side-profile view, character facing left or right, "
+        "silhouette clearly readable, face profile visible"
+    ),
+    "dynamic_diagonal_view": (
+        "dynamic diagonal camera view, character posed along a diagonal line across the card, "
+        "creating motion and depth while keeping the face visible"
+    ),
+}
+
+CAMERA_HEIGHT_PROFILES: dict[str, str] = {
+    "eye_level": (
+        "eye-level shot, camera at the same height as the character's eyes, "
+        "neutral and natural perspective for a balanced narrative"
+    ),
+    "low_angle": (
+        "low-angle shot, camera positioned below the character looking up, "
+        "emphasizing presence, power, and heroic stature"
+    ),
+    "high_angle": (
+        "high-angle shot, camera positioned above the character looking down, "
+        "conveying vulnerability, isolation, or being overwhelmed"
+    ),
+    "birds_eye": (
+        "bird's-eye view, near-vertical top-down perspective, "
+        "emphasizing spatial relationships, environment, and a sense of fated overview"
+    ),
+    "worms_eye": (
+        "worm's-eye view, extreme low angle from near the ground looking up, "
+        "creating intense awe, reverence, or monstrous presence"
+    ),
+    "dutch_angle": (
+        "dutch-angle (canted) shot, the entire frame tilted off horizontal, "
+        "creating tension, unease, or a surreal off-balance atmosphere"
+    ),
+}
+
+
 CAMERA_ARCHETYPES: dict[str, dict[str, list[str]]] = {
     "hero_portrait": {
         "shot_type": [
@@ -408,13 +481,6 @@ CAMERA_ARCHETYPES: dict[str, dict[str, list[str]]] = {
             "chest-up framing with arms partially visible",
             "waist-up framing showing the upper half of the body",
             "knee-up framing showing most of the body and pose",
-        ],
-        "camera_angle": ["eye-level view", "slightly low-angle view", "slight three-quarter angle", "frontal centered view"],
-        "body_orientation": [
-            "facing forward",
-            "turned slightly left",
-            "turned slightly right",
-            "body angled with head facing viewer",
         ],
         "pose_family": [
             "standing calmly with relaxed shoulders, arms naturally arranged, and weight balanced between both feet",
@@ -450,12 +516,6 @@ CAMERA_ARCHETYPES: dict[str, dict[str, list[str]]] = {
             "knee-up framing with weapon visible and stance grounded",
             "full-body shot from head to toe with feet planted firmly on the ground",
         ],
-        "camera_angle": ["eye-level view", "frontal centered view", "slightly low-angle view"],
-        "body_orientation": [
-            "facing forward",
-            "body angled with head facing viewer",
-            "torso turned slightly while feet stay planted",
-        ],
         "pose_family": [
             "battle-ready stance with feet shoulder-width apart, knees slightly bent, and weapon held at chest height",
             "standing firmly with shield-side shoulder forward, weapon kept low but ready, and gaze locked ahead",
@@ -485,13 +545,6 @@ CAMERA_ARCHETYPES: dict[str, dict[str, list[str]]] = {
             "waist-up framing showing the torso, both hands, and surrounding spell-light",
             "knee-up framing with magical effects swirling around the body",
             "full-body shot from head to toe with robes and spell aura fully visible",
-        ],
-        "camera_angle": ["slight three-quarter angle", "slightly low-angle view", "eye-level view"],
-        "body_orientation": [
-            "facing forward",
-            "turned slightly left",
-            "turned slightly right",
-            "body angled with head facing viewer",
         ],
         "pose_family": [
             "casting magic with one hand raised near shoulder height, fingers open, and glowing energy gathered around the palm",
@@ -523,13 +576,6 @@ CAMERA_ARCHETYPES: dict[str, dict[str, list[str]]] = {
             "knee-up framing showing footwork and balanced stance",
             "full-body shot from head to toe showing the entire dynamic pose",
         ],
-        "camera_angle": ["slight three-quarter angle", "eye-level view", "slightly low-angle view"],
-        "body_orientation": [
-            "facing forward",
-            "turned slightly left",
-            "turned slightly right",
-            "body angled with head facing viewer",
-        ],
         "pose_family": [
             "forward-leaning agile stance with weight on the front leg, rear leg ready to spring, and weapon kept clear of the face",
             "swift poised stance with one shoulder leading, elbows bent, and the silhouette readable",
@@ -560,13 +606,6 @@ CAMERA_ARCHETYPES: dict[str, dict[str, list[str]]] = {
             "chest-up framing showing collar, jewelry, and graceful upper-body posture",
             "waist-up framing showing the upper costume and one elegant hand gesture",
             "knee-up framing showing the costume silhouette and posed stance",
-        ],
-        "camera_angle": ["slight three-quarter angle", "eye-level view", "slightly low-angle view", "frontal centered view"],
-        "body_orientation": [
-            "facing forward",
-            "body angled with head facing viewer",
-            "turned slightly left",
-            "turned slightly right",
         ],
         "pose_family": [
             "graceful display pose with the shoulders turned, chin slightly lifted, and hands placed elegantly within the frame",
@@ -906,11 +945,20 @@ def choose_camera_spec(
     pose_family = explicit_pose or _pick_list_value(config["pose_family"], rng)
     expression_family = explicit_expression or _pick_list_value(config["expression_family"], rng)
 
+    # Camera orientation + height are global, equal-weight, archetype-independent.
+    # Each card draws one of each independently to maximize visual variety;
+    # no archetype-specific bias is applied so that the dramatic spectrum
+    # (worm's-eye, dutch, bird's-eye) is reachable regardless of archetype.
+    orientation_key = _pick_list_value(list(CAMERA_ORIENTATION_PROFILES.keys()), rng)
+    height_key = _pick_list_value(list(CAMERA_HEIGHT_PROFILES.keys()), rng)
+
     return {
         "archetype": archetype,
         "shot_type": _pick_list_value(config["shot_type"], rng),
-        "camera_angle": _pick_list_value(config["camera_angle"], rng),
-        "body_orientation": _pick_list_value(config["body_orientation"], rng),
+        "camera_orientation": CAMERA_ORIENTATION_PROFILES[orientation_key],
+        "camera_orientation_key": orientation_key,
+        "camera_height": CAMERA_HEIGHT_PROFILES[height_key],
+        "camera_height_key": height_key,
         "pose_family": pose_family,
         "expression_family": expression_family,
         "lighting": _pick_list_value(config["lighting"], rng),
@@ -1187,8 +1235,10 @@ def render_prompt_spec_for_cloud_image(spec: dict[str, Any]) -> str:
         "",
         "Details:",
         (
-            f"The character wears {equipment}. The character is shown as a {direction['shot_type']}, "
-            f"{direction['camera_angle']}, {direction['body_orientation']}. Pose: {direction['pose_family']}. "
+            f"The character wears {equipment}. The character is shown as a {direction['shot_type']}. "
+            f"Camera orientation: {direction['camera_orientation']}. "
+            f"Camera height / tilt: {direction['camera_height']}. "
+            f"Pose: {direction['pose_family']}. "
             f"Expression: {direction['expression_family']}. Object rule: {object_rule['object_prompt']}; "
             f"{object_rule['visibility_rule']}."
         ),
@@ -1278,7 +1328,7 @@ def render_prompt_spec_for_cloud_edit(spec: dict[str, Any]) -> str:
         no_class_note = " Do not depict the character as any class, profession, or combat role."
 
     lines = [
-        "Continue the character card series using the same character from the reference image. Re-render that character in a new artistic style and a new scene, but keep the character's identity exactly the same.",
+        "Continue the character card series using the same character from the reference image. Re-render that character in a new artistic style and a NEW scene with a CLEARLY DIFFERENT pose, body orientation, and camera framing — show them at a different moment of their adventure, not the same standing pose as the reference. Keep the character's identity (face, hair, race, body, gender) exactly the same.",
         "",
         "Preserve from the reference image (do not redesign):",
         "- exact face: eyes, nose, mouth, jawline, facial proportions, skin texture",
@@ -1292,9 +1342,11 @@ def render_prompt_spec_for_cloud_edit(spec: dict[str, Any]) -> str:
         f"- class / profession: {class_name}.{no_class_note}",
         f"- clothing and equipment: {equipment} (replace whatever the reference image was wearing)",
         f"- held object: {object_rule['object_prompt']}; {object_rule['visibility_rule']}",
-        f"- pose: {direction['pose_family']}",
+        f"- pose (must clearly differ from reference): {direction['pose_family']}",
         f"- expression: {direction['expression_family']}",
-        f"- shot framing: {direction['shot_type']}, {direction['camera_angle']}, {direction['body_orientation']}",
+        f"- shot framing (must clearly differ from reference): {direction['shot_type']}",
+        f"- camera orientation (must clearly differ from reference): {direction['camera_orientation']}",
+        f"- camera height / tilt (must clearly differ from reference): {direction['camera_height']}",
         f"- background: {background}",
         f"- atmosphere and lighting: {direction['lighting']}, {direction['mood']}, {direction['color_palette']}, {atmosphere}",
         f"- rarity visual quality: {rarity_visual}",
@@ -1311,6 +1363,7 @@ def render_prompt_spec_for_cloud_edit(spec: dict[str, Any]) -> str:
         "Constraints:",
         "- The character is the same person as in the reference image, just at a new moment in their adventure — same face, same race, same body, same gender, same hair.",
         "- Do not redesign the character's face, race, body, or gender; only re-render in the new style with the new clothing, weapon, pose, and background described above.",
+        "- Vary the staging: the pose, body orientation, camera angle, and overall composition MUST be different from the reference image. Do not copy the reference's stance, body angle, or framing.",
         "- Single character only; no extra characters, companions, animals, duplicated bodies, or obscured face.",
         f"- Avoid: {forbidden_traits or 'unintended race, gender, or object drift'}.",
         f"- Text rules: {_join_rules(text_rule['layout_constraints'])}.",
@@ -1376,8 +1429,8 @@ def render_prompt_spec_for_llm(spec: dict[str, Any]) -> str:
         f"- style profile: {direction['style_profile']}",
         f"- archetype: {direction['archetype']}",
         f"- shot type: {direction['shot_type']}",
-        f"- camera angle: {direction['camera_angle']}",
-        f"- body orientation: {direction['body_orientation']}",
+        f"- camera orientation ({direction.get('camera_orientation_key', '?')}): {direction['camera_orientation']}",
+        f"- camera height / tilt ({direction.get('camera_height_key', '?')}): {direction['camera_height']}",
         f"- pose: {direction['pose_family']}",
         f"- expression: {direction['expression_family']}",
     ])
