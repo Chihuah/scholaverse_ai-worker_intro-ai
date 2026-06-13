@@ -263,16 +263,23 @@ BACKGROUND_MAP: dict[str, str] = {
 
 EXPRESSION_MAP: dict[str, str] = {
     "regal": "regal commanding expression",
-    "passionate": "intense passionate expression",
+    "triumphant": "triumphant spirited expression",
     "confident": "confident expression",
     "calm": "calm serene expression",
+    "contemplative": "thoughtful contemplative expression",
+    # legacy keys（舊卡牌資料仍可能帶這些值）
+    "passionate": "intense passionate expression",
     "weary": "weary expression",
 }
 
 POSE_MAP: dict[str, str] = {
-    "charging": "charging forward",
+    "victorious": "victorious pose, weapon raised high overhead, standing tall",
     "battle_ready": "battle-ready stance",
     "standing": "standing upright",
+    "kneeling": "kneeling on one knee, knightly vow pose",
+    "sitting": "sitting cross-legged on the ground, meditative rest",
+    # legacy keys（舊卡牌資料仍可能帶這些值）
+    "charging": "charging forward",
     "crouching": "crouching low",
 }
 

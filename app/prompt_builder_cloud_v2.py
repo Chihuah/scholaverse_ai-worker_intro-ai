@@ -283,16 +283,23 @@ BACKGROUND_MAP: dict[str, str] = {
 
 EXPRESSION_MAP: dict[str, str] = {
     "regal": "regal commanding expression, head slightly raised, brow softly furrowed, gaze fixed forward with quiet authority",
-    "passionate": "intense passionate expression, bright focused eyes, lifted brows, and mouth slightly open as if mid-battle cry",
+    "triumphant": "triumphant spirited expression, bright proud eyes, raised chin, and an open confident smile radiating accomplishment",
     "confident": "confident expression, steady forward gaze, relaxed brow, and a faint controlled smile",
     "calm": "calm serene expression, softened eyes, relaxed mouth, and peaceful focused gaze",
+    "contemplative": "thoughtful contemplative expression, eyes gazing slightly aside in quiet reflection, relaxed brows, and lips gently closed",
+    # legacy keys（舊卡牌資料仍可能帶這些值）
+    "passionate": "intense passionate expression, bright focused eyes, lifted brows, and mouth slightly open as if mid-battle cry",
     "weary": "weary expression, half-lowered eyelids, slight downward gaze, mouth gently closed, and faint shadows under the eyes",
 }
 
 POSE_MAP: dict[str, str] = {
-    "charging": "charging forward with weight on the front leg, body leaning into motion, weapon arm extended, and free arm pulled back for balance",
+    "victorious": "victorious pose standing tall, weapon raised high overhead in one hand, chest open, head held high in triumph",
     "battle_ready": "battle-ready stance with feet shoulder-width apart, knees slightly bent, weapon held at chest height in a guarded posture, gaze locked forward",
     "standing": "standing upright with balanced weight, relaxed shoulders, arms naturally arranged, and face directed toward the viewer",
+    "kneeling": "kneeling on one knee in a knightly vow pose, one hand resting on the raised knee or grounded weapon, head slightly bowed with eyes looking forward",
+    "sitting": "sitting cross-legged on the ground in meditative rest, hands resting naturally, posture relaxed yet composed, face clearly visible",
+    # legacy keys（舊卡牌資料仍可能帶這些值）
+    "charging": "charging forward with weight on the front leg, body leaning into motion, weapon arm extended, and free arm pulled back for balance",
     "crouching": "crouching low with bent knees, torso angled forward, one hand balancing the movement, and eyes alert",
 }
 
