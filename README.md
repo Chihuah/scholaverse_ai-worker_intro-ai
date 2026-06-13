@@ -1,34 +1,64 @@
 # Scholaverse AI Worker
 
-> vm-ai-worker (192.168.50.110) — AI 圖片生成服務
+> vm-ai-worker (192.168.60.110) — AI 圖片生成服務
 
-接收 vm-web-server 送來的 RPG 角色配置與學習數據，透過 **Ollama LLM** 產出文生圖 prompt，再由 **sd-cli + Z-Image-Turbo** 生成角色卡牌圖片。
+接收 vm-web-server 送來的 RPG 角色配置與學習數據，生成角色卡牌圖片。支援**雙生圖後端**：
+
+- **本地生圖（local）**：透過 **Ollama LLM** 產出文生圖 prompt，再由 **sd-cli + Z-Image-Turbo** 在本機 GPU 生成
+- **雲端生圖（cloud）**：以雲端最佳化的 prompt 渲染器直接產出提示詞，呼叫 **OpenAI gpt-image-2** 生成；另支援 **image edit 模式**（以學生既有卡牌為錨點，維持角色一致性）
+
+雲端失敗時自動逐層回退（cloud edit → cloud generate → local SD），學生端永遠拿得到卡。
 
 ## 架構
 
 ```
-vm-web-server (192.168.50.111)    vm-ai-worker (192.168.50.110)    vm-db-storage (192.168.50.112)
+vm-web-server (192.168.60.111)    vm-ai-worker (192.168.60.110)    vm-db-storage (192.168.60.112)
        │                                │                                │
        │  POST /api/generate            │                                │
        ├───────────────────────────────>│                                │
        │  202 Accepted                  │                                │
        │<───────────────────────────────┤                                │
-       │                                │  Step 1: Ollama 生成 prompt     │
-       │                                │  Step 1.5: 卸載模型(釋放 VRAM)  │
-       │                                │  Step 2: sd-cli 文生圖          │
+       │                                │  ┌─ backend=local ──────────┐  │
+       │                                │  │ Step 1: Ollama 生成 prompt│  │
+       │                                │  │ Step 1.5: 卸載模型(釋VRAM)│  │
+       │                                │  │ Step 2: sd-cli 文生圖     │  │
+       │                                │  └──────────────────────────┘  │
+       │                                │  ┌─ backend=cloud ──────────┐  │
+       │                                │  │ Step 1: 渲染雲端 prompt   │  │
+       │                                │  │ (有錨點圖→先抓參考圖)     │  │
+       │                                │  │ Step 2: gpt-image-2       │  │
+       │                                │  │ generate / edit           │  │
+       │                                │  │ (失敗→逐層回退至本地)     │  │
+       │                                │  └──────────────────────────┘  │
        │                                │  Step 3: 產生縮圖              │
        │                                │  Step 4: 上傳圖片 ────────────>│
        │  POST callback (完成/失敗)      │                                │
        │<───────────────────────────────┤  Step 5: 回調                   │
 ```
 
+## 生圖後端與回退策略
+
+後端由 vm-web-server 在請求中以 `backend` 欄位指定（全域切換由 web 端管理後台設定）。
+
+| 請求情境 | 處理路徑 |
+|----------|---------|
+| `backend=local` | Ollama prompt → sd-cli 文生圖（傳統五步驟） |
+| `backend=cloud`，雲端未啟用 | 直接回退本地 |
+| `backend=cloud`，無錨點圖 | gpt-image-2 `images.generate` → 失敗則回退本地 |
+| `backend=cloud`，帶 `reference_image_url` | gpt-image-2 `images.edit`（角色一致性）→ 失敗則改試 `images.generate` → 再失敗回退本地 |
+
+- 雲端路徑**不使用 Ollama 與本機 GPU**：prompt 由 `prompt_builder_cloud_v2.py` 以規則直接渲染（含 camera orientation/height 兩維度的隨機取景），不經 LLM。
+- 回退至本地時，callback 會標記 `fallback_from_cloud=true` 並保留 `cloud_error`，方便後台追蹤。
+- 雲端生成尺寸 880×1280（與卡面相同），品質預設 `medium`（`high` 費用顯著較高，參考：medium 單張約 US$0.04）。
+
 ## 前置需求
 
-- **NVIDIA GPU** + CUDA 驅動（本專案使用 RTX 5080）
+- **NVIDIA GPU** + CUDA 驅動（本專案使用 RTX 5080；僅本地生圖需要）
 - **Conda**（Miniconda / Anaconda）
-- **Ollama**（LLM 推理服務）
+- **Ollama**（LLM 推理服務；僅本地生圖需要）
 - **sd-cli**（已編譯，位於 `/home/chihuah/stable-diffusion.cpp/build/bin/sd-cli`）
 - **AI 模型檔案**（位於 `/home/chihuah/stable-diffusion.cpp/models/`）
+- **OpenAI API key**（僅雲端生圖需要，設定於 `.env`）
 
 ## 安裝
 
@@ -79,6 +109,18 @@ cp .env.example .env
 | `OLLAMA_MODEL` | Ollama 使用的模型名稱 | `qwen2.5-14b` |
 | `USE_MOCK_STORAGE` | 是否使用 Mock 儲存（圖片存本機） | `true` |
 
+雲端生圖設定（皆為選用，不啟用即為純本地模式）：
+
+| 變數 | 說明 | 預設值 |
+|------|------|--------|
+| `ENABLE_CLOUD_IMAGE_GEN` | 雲端生圖功能開關（須顯式開啟） | `false` |
+| `OPENAI_API_KEY` | OpenAI API 金鑰（**只放 .env，嚴禁進版控**） | — |
+| `CLOUD_IMAGE_MODEL` | 雲端模型 id | `gpt-image-2` |
+| `CLOUD_IMAGE_SIZE` | 生成尺寸 | `880x1280` |
+| `CLOUD_IMAGE_QUALITY` | 品質：low / medium / high / auto | `medium` |
+| `CLOUD_IMAGE_TIMEOUT` | API read timeout（秒；實測生成常需數分鐘） | `300` |
+| `CLOUD_IMAGE_CONNECT_TIMEOUT` | API connect timeout（秒；網路斷線快速失敗） | `10` |
+
 ## 啟動服務
 
 ### 開發模式
@@ -126,6 +168,7 @@ curl -X POST http://localhost:8000/api/generate \
     "job_id": "550e8400-e29b-41d4-a716-446655440000",
     "card_id": 1,
     "student_id": "411234567",
+    "student_nickname": "小明",
     "card_config": {
       "race": "elf",
       "gender": "female",
@@ -138,7 +181,7 @@ curl -X POST http://localhost:8000/api/generate \
       "expression": "confident",
       "pose": "battle_ready",
       "border": "gold",
-      "level": 8
+      "level": 80
     },
     "learning_data": {
       "unit_scores": {
@@ -147,9 +190,21 @@ curl -X POST http://localhost:8000/api/generate \
       },
       "overall_completion": 88.4
     },
-    "callback_url": "http://192.168.50.111/api/internal/generation-callback"
+    "callback_url": "http://192.168.60.111/api/internal/generation-callback",
+    "backend": "local"
   }'
 ```
+
+雲端生圖相關欄位（皆為選用）：
+
+| 欄位 | 說明 |
+|------|------|
+| `backend` | `"local"`（預設）或 `"cloud"` |
+| `cloud_model` | 覆寫預設雲端模型 id（測試新模型用） |
+| `reference_card_id` | 錨點卡 ID（image edit 模式，純記錄用） |
+| `reference_image_url` | 錨點卡圖片 URL（提供時走 image edit 路徑，worker 會抓取參考圖） |
+
+> `card_config` 中的 `expression` / `pose` 為選填：未提供時由 camera archetype 系統依職業戰鬥風格、解鎖階段與稀有度的權重隨機抽選。
 
 ### 查詢任務狀態
 
@@ -158,6 +213,20 @@ curl http://localhost:8000/api/jobs/550e8400-e29b-41d4-a716-446655440000
 ```
 
 任務狀態流轉：`queued` → `processing` → `uploading` → `completed` / `failed`
+
+### Callback 內容
+
+任務完成或失敗時，worker 會 POST callback 至 `callback_url`。除原有欄位（prompt、seed、lora_used 等）外，雲端生圖新增以下 metadata：
+
+| 欄位 | 說明 |
+|------|------|
+| `backend_used` | 實際使用的後端（`local` / `cloud`；回退後為 `local`） |
+| `cloud_model` | 實際使用的雲端模型（如 `gpt-image-2`） |
+| `cloud_mode` | `generate` / `edit` |
+| `cloud_quality` | 生成品質（low / medium / high / auto） |
+| `fallback_from_cloud` | 雲端失敗回退本地時為 `true` |
+| `cloud_error` | 回退時保留的雲端錯誤訊息 |
+| `reference_card_id` | image edit 使用的錨點卡 ID |
 
 ### 健康檢查
 
@@ -191,36 +260,47 @@ pytest tests/ -v
 python scripts/test_generate.py
 ```
 
+> `tests/` 為開發過渡用的暫時性測試，刻意不進版控。
+
 ## 專案結構
 
 ```
 ai-worker/
-├── main.py                      # FastAPI 入口 + lifespan
+├── main.py                          # FastAPI 入口 + lifespan
 ├── requirements.txt
 ├── .env / .env.example
 ├── app/
-│   ├── config.py                # 設定管理（讀取 .env）
-│   ├── schemas.py               # Pydantic request/response 模型
-│   ├── queue.py                 # JobQueue + GenerationJob
-│   ├── worker.py                # worker_loop（五步驟處理流程）
-│   ├── prompt_builder.py        # RPG 屬性映射表 → 結構化描述
-│   ├── llm_service.py           # Ollama API 封裝（含 VRAM 卸載）
-│   ├── sd_runner.py             # sd-cli subprocess 封裝 + 縮圖
-│   ├── storage_uploader.py      # 圖片上傳（Mock / Real）
-│   ├── callback.py              # vm-web-server 回調（含重試）
+│   ├── config.py                    # 設定管理（讀取 .env，含雲端生圖設定）
+│   ├── schemas.py                   # Pydantic request/response 模型
+│   ├── queue.py                     # JobQueue + GenerationJob
+│   ├── worker.py                    # worker_loop（後端分流 + 回退鏈）
+│   ├── prompt_builder.py            # 本地路徑：RPG 屬性映射 → 結構化描述（餵 Ollama）
+│   ├── prompt_builder_cloud_v2.py   # 雲端路徑：直接渲染 gpt-image-2 提示詞
+│   │                                #（含 camera orientation/height 取景系統）
+│   ├── cloud_image_gen.py           # OpenAI gpt-image-2 封裝（generate / edit）
+│   ├── llm_service.py               # Ollama API 封裝（含 VRAM 卸載）
+│   ├── sd_runner.py                 # sd-cli subprocess 封裝 + 縮圖
+│   ├── storage_uploader.py          # 圖片上傳（Mock / Real）
+│   ├── callback.py                  # vm-web-server 回調（含重試）
 │   └── routers/
-│       ├── generate.py          # POST /api/generate
-│       ├── jobs.py              # GET /api/jobs/{job_id}
-│       └── health.py            # GET /api/health + 靜態圖片
-├── outputs/                     # 生成圖片暫存目錄
-├── tests/                       # pytest 單元測試
+│       ├── generate.py              # POST /api/generate
+│       ├── jobs.py                  # GET /api/jobs/{job_id}
+│       └── health.py                # GET /api/health + 靜態圖片
+├── outputs/                         # 生成圖片暫存目錄
+├── tests/                           # pytest 單元測試（不進版控）
 ├── scripts/
-│   └── test_generate.py         # 手動測試腳本
+│   ├── test_generate.py             # 手動端對端測試
+│   ├── gen_single.py                # 單張生圖（指定參數）
+│   ├── param_sweep.py               # 生圖參數系統性掃描
+│   ├── prompt_lora_sweep.py         # prompt × LoRA 組合掃描
+│   ├── journey_sweep.py             # 學習歷程情境批次掃描
+│   ├── student_journey.py           # 模擬單一學生完整歷程
+│   └── test_batch_generate.py       # 批次生圖測試
 └── docs/
-    └── vm-ai-worker-spec.md     # 完整開發規格書
+    └── vm-ai-worker-spec.md         # 完整開發規格書
 ```
 
-## GPU VRAM 管理
+## GPU VRAM 管理（僅本地生圖）
 
 Ollama (qwen2.5-14b, ~70% VRAM) 與 sd-cli **不可同時佔用 GPU**，否則 CUDA OOM。
 
@@ -230,12 +310,16 @@ Worker 的處理順序確保兩者不衝突：
 2. **Step 1.5** — 呼叫 `keep_alive=0` 卸載 Ollama 模型，釋放 VRAM
 3. **Step 2** — sd-cli 獨佔 GPU 進行文生圖
 
+雲端生圖路徑不經 Ollama 也不使用本機 GPU，無此限制；但雲端回退本地時會完整走一次上述流程。
+
 ## 錯誤處理
 
 | 情境 | Timeout | 處理策略 |
 |------|---------|---------|
 | Ollama prompt 生成 | 60s | 標記 failed，送 callback |
 | sd-cli 文生圖 | 300s | 終止 subprocess，標記 failed |
+| gpt-image-2 generate / edit | connect 10s / read 300s | 逐層回退（edit → generate → 本地 SD），不額外重試 |
+| 錨點參考圖抓取 | 30s | 視為 cloud edit 失敗，進入回退鏈 |
 | 上傳 vm-db-storage | 60s | 重試 2 次，fallback 存本機 |
 | Callback POST | 15s | 重試 3 次（間隔 2/5/10 秒） |
 | 佇列已滿 (>50) | — | 回傳 HTTP 503 |
